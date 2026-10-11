@@ -32,6 +32,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: location-android
+      - name: Configure Android NDK
+        run: |
+          ndk_bin=$(ls -d "$ANDROID_HOME"/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/bin | sort -V | tail -n1)
+          test -x "$ndk_bin/aarch64-linux-android26-clang"
+          echo "CC_aarch64_linux_android=$ndk_bin/aarch64-linux-android26-clang" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$ndk_bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ndk_bin/aarch64-linux-android26-clang" >> "$GITHUB_ENV"
       - run: cargo check --locked --target aarch64-linux-android --features android --lib
       - name: Compile Java host
         run: |
