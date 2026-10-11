@@ -51,6 +51,12 @@ NekoSportsWorldTool help                                 # 全部命令
 
 青龙定时任务：首次手工 `login --remember` 一次，之后定时挂 `run` 即可。
 
+## 系统定位
+
+设备信息页支持主动获取 Windows / macOS / Linux / Android 系统定位，核对城市和坐标后保存。
+桌面 CLI 使用 `location` 查看，或 `location --save --city <实际城市>` 保存。
+权限、Linux 依赖与坐标系说明见 [系统定位](docs/system-location.md)。
+
 ## 常见问题
 
 - **提示未登录 / 401**：先执行 `login --remember`（GUI 勾选记住密码等价），会话失效会自动重登

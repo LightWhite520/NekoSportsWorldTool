@@ -15,9 +15,31 @@ const ANDROID_OS_POOL: [&str; 4] = ["12", "13", "14", "15"];
 #[derive(Default)]
 pub struct DevicePage {
     saved_flash: f32,
+    location: Option<std::sync::mpsc::Receiver<Result<crate::location::system::SystemLocation, String>>>,
+    location_started: Option<std::time::Instant>,
 }
 
 impl App {
+    pub(super) fn poll_location(&mut self) {
+        let Some(receiver) = self.device_page.location.as_ref() else { return };
+        let reply = match receiver.try_recv() {
+            Ok(reply) => reply,
+            Err(std::sync::mpsc::TryRecvError::Empty) if self.device_page.location_started
+                .is_some_and(|time| time.elapsed().as_secs() < 70) => return,
+            Err(std::sync::mpsc::TryRecvError::Empty) => Err("系统定位超时，请重试".into()),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("系统定位服务已停止".into()),
+        };
+        self.device_page.location = None;
+        self.device_page.location_started = None;
+        self.status = match reply {
+            Ok(location) => match location.apply(&mut self.device_buf) {
+                Ok(()) => format!("已获取系统定位（精度约 {:.0} 米）；请核对城市、经纬度并点击保存", location.accuracy),
+                Err(error) => format!("× {error}"),
+            },
+            Err(error) => format!("× {error}"),
+        };
+    }
+
     #[cfg(target_os = "android")]
     pub(super) fn poll_device_info(&mut self) {
         let Some(reply) = crate::android::take_device_info() else { return };
@@ -83,6 +105,14 @@ impl App {
 
         ui.add_space(6.0);
         let is_ios = self.device_buf.platform != "android";
+        if ui.add_enabled(page.location.is_none(), egui::Button::new(
+            if page.location.is_some() { "正在获取系统定位…" } else { "获取系统定位" }
+        )).clicked() {
+            page.location = Some(crate::location::system::request());
+            page.location_started = Some(std::time::Instant::now());
+            self.status = "正在获取系统定位，请在系统提示中允许位置访问".into();
+        }
+        ui.label("获取当前位置后核对并保存；系统未返回城市时需手动填写城市。");
         let id_label = if is_ios { "DeviceId（UUID 大写）" } else { "DeviceId（Android）" };
         let idfa_label = if is_ios { "IDFA（可空）" } else { "IMEI（可空）" };
         let name_label = if is_ios { "设备名" } else { "机型" };
@@ -144,7 +174,7 @@ impl App {
         ui.add_space(4.0);
         ui.colored_label(
             theme::text_dim(),
-            "定位锚点填写顺序：先填纬度，再填经度；地图常见的“经度,纬度”格式需要调换后填写。",
+            "定位锚点填写顺序：先填纬度，再填经度；系统定位为 WGS84，地图坐标需核对坐标系后填写。",
         );
         ui.colored_label(
             theme::text_dim(),

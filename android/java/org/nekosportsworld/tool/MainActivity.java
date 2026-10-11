@@ -19,6 +19,90 @@ public final class MainActivity extends NativeActivity {
     private AlertDialog deviceInfoDialog;
     private boolean taskActive;
     private boolean resumed;
+    private static final int LOCATION_PERMISSION = 204;
+    private final android.os.Handler locationHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private android.location.LocationManager locationManager;
+    private android.location.LocationListener locationListener;
+    private boolean locationPending;
+    private boolean locationPermissionPending;
+    private final Runnable locationTimeout = () -> finishLocation("", "系统定位超时，请检查位置服务后重试");
+
+    private native void nativeLocation(String json, String error);
+
+    public void requestSystemLocation() {
+        runOnUiThread(() -> {
+            if (locationPending) return;
+            locationPending = true;
+            locationHandler.postDelayed(locationTimeout, 60000);
+            if (isFinishing() || isDestroyed()) {
+                finishLocation("", "应用已退出，请重新获取定位");
+                return;
+            }
+            if (checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                locationPermissionPending = true;
+                requestPermissions(new String[]{android.Manifest.permission.ACCESS_COARSE_LOCATION,
+                    android.Manifest.permission.ACCESS_FINE_LOCATION}, LOCATION_PERMISSION);
+            } else startSystemLocation();
+        });
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode != LOCATION_PERMISSION) return;
+        locationPermissionPending = false;
+        if (!locationPending) return;
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            startSystemLocation();
+        } else finishLocation("", "位置权限被拒绝，可在系统设置中授权或手动填写");
+    }
+
+    private void startSystemLocation() {
+        try {
+            locationManager = (android.location.LocationManager) getSystemService(LOCATION_SERVICE);
+            locationListener = new android.location.LocationListener() {
+                @Override public void onLocationChanged(android.location.Location location) {
+                    long age = android.os.SystemClock.elapsedRealtimeNanos() - location.getElapsedRealtimeNanos();
+                    if (age < 0 || age > 60000000000L || !location.hasAccuracy()) return;
+                    try {
+                        org.json.JSONObject json = new org.json.JSONObject();
+                        json.put("latitude", location.getLatitude());
+                        json.put("longitude", location.getLongitude());
+                        json.put("accuracy", location.getAccuracy());
+                        // City is intentionally entered by the user; no remote geocoder request.
+                        json.put("city", org.json.JSONObject.NULL);
+                        finishLocation(json.toString(), "");
+                    } catch (Exception error) { finishLocation("", "系统定位返回无效数据"); }
+                }
+                @Override public void onProviderDisabled(String provider) { }
+                @Override public void onProviderEnabled(String provider) { }
+                @Override public void onStatusChanged(String provider, int status, Bundle extras) { }
+            };
+            boolean fine = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            boolean requested = false;
+            for (String provider : new String[]{android.location.LocationManager.NETWORK_PROVIDER,
+                    android.location.LocationManager.GPS_PROVIDER}) {
+                if (!fine && provider.equals(android.location.LocationManager.GPS_PROVIDER)) continue;
+                if (locationManager.isProviderEnabled(provider)) {
+                    locationManager.requestLocationUpdates(provider, 0, 0, locationListener, android.os.Looper.getMainLooper());
+                    requested = true;
+                }
+            }
+            if (!requested) finishLocation("", "系统位置服务未开启或没有可用定位提供者");
+        } catch (Exception error) { finishLocation("", "无法获取系统定位：" + error.getMessage()); }
+    }
+
+    private void finishLocation(String json, String error) {
+        if (!locationPending) return;
+        locationPending = false;
+        locationHandler.removeCallbacks(locationTimeout);
+        if (locationManager != null && locationListener != null) {
+            try { locationManager.removeUpdates(locationListener); } catch (Exception ignored) { }
+        }
+        locationListener = null;
+        nativeLocation(json, error);
+    }
 
     private native void nativeSubmitEdit(long id, String value);
     private native void nativeSetInsets(int left, int top, int right, int bottom);
@@ -219,12 +303,14 @@ public final class MainActivity extends NativeActivity {
     }
 
     @Override protected void onPause() {
+        if (!locationPermissionPending) finishLocation("", "应用进入后台，定位已取消，请返回后重试");
         resumed = false;
         updateScreenPolicy();
         super.onPause();
     }
 
     @Override protected void onDestroy() {
+        finishLocation("", "应用已退出，定位已取消");
         if (editorDialog != null) editorDialog.dismiss();
         if (deviceInfoDialog != null) deviceInfoDialog.dismiss();
         taskActive = false;

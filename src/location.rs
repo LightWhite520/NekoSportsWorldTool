@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod system;
+
 const DEFAULT_ANCHOR_LAT: f64 = 38.901678;
 const DEFAULT_ANCHOR_LON: f64 = 121.540241;
 const DEFAULT_CITY: &str = "大连市";

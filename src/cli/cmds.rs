@@ -11,6 +11,7 @@ pub fn dispatch(args: Vec<String>) -> i32 {
     match cmd {
         "login" => cmd_login(&rest),
         "logout" => cmd_logout(),
+        "location" => cmd_location(&rest),
         "run" => cmd_run(&rest),
         "template" => cmd_template(&rest),
         "ai" => cmd_ai(&rest),
@@ -40,6 +41,30 @@ pub fn dispatch(args: Vec<String>) -> i32 {
 
 fn usage() {
     super::usage();
+}
+
+fn cmd_location(rest: &[&str]) -> i32 {
+    let flags = parse_flags(rest);
+    let city = get(&flags, "city").map(str::trim).filter(|city| !city.is_empty());
+    if get(&flags, "save").is_some() && city.is_none() {
+        eprintln!("保存定位需要 --city <实际城市>，避免沿用旧城市");
+        return 1;
+    }
+    match crate::location::system::locate() {
+        Ok(mut location) => {
+            println!("纬度 {:.6}，经度 {:.6}，精度约 {:.0} 米（WGS84）", location.latitude, location.longitude, location.accuracy);
+            if get(&flags, "save").is_some() {
+                location.city = city.map(str::to_owned);
+                let mut identity = model::load_identity();
+                if let Err(error) = location.apply(&mut identity).and_then(|()| model::save_identity(&identity)) {
+                    eprintln!("保存定位失败：{error}"); return 1;
+                }
+                println!("系统定位已保存");
+            }
+            0
+        }
+        Err(error) => { eprintln!("{error}"); 1 }
+    }
 }
 
 fn cmd_login(rest: &[&str]) -> i32 {

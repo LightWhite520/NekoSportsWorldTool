@@ -12,6 +12,36 @@ static EDITS: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
 static SCREEN_ON: AtomicBool = AtomicBool::new(false);
 static SAFE_INSETS: Mutex<[i32; 4]> = Mutex::new([0; 4]);
 static DEVICE_INFO: Mutex<Option<DeviceInfoReply>> = Mutex::new(None);
+static LOCATION: Mutex<Option<std::sync::mpsc::Sender<Result<crate::location::system::SystemLocation, String>>>> = Mutex::new(None);
+
+pub(crate) fn request_location(sender: std::sync::mpsc::Sender<Result<crate::location::system::SystemLocation, String>>) {
+    let mut pending = LOCATION.lock().unwrap();
+    if pending.is_some() {
+        let _ = sender.send(Err("已有系统定位请求，请等待完成".into()));
+        return;
+    }
+    *pending = Some(sender);
+    drop(pending);
+    if !with_activity(|env, activity| {
+        env.call_method(activity, "requestSystemLocation", "()V", &[])?;
+        Ok(())
+    }) {
+        if let Some(sender) = LOCATION.lock().unwrap().take() {
+            let _ = sender.send(Err("无法调用 Android 系统定位服务".into()));
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_nekosportsworld_tool_MainActivity_nativeLocation(
+    mut env: JNIEnv<'_>, _activity: JObject<'_>, json: JString<'_>, error: JString<'_>,
+) {
+    let json: String = env.get_string(&json).map(|s| s.into()).unwrap_or_default();
+    let error: String = env.get_string(&error).map(|s| s.into()).unwrap_or_default();
+    let result = if error.is_empty() { crate::location::system::decode(&json) } else { Err(error) };
+    if let Some(sender) = LOCATION.lock().unwrap().take() { let _ = sender.send(result); }
+    if let Some(context) = CONTEXT.lock().unwrap().as_ref() { context.request_repaint(); }
+}
 
 pub(crate) struct DeviceInfoReply {
     pub initial: bool,
