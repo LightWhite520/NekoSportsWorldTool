@@ -59,6 +59,12 @@ GUI 的设备设置支持「在线地图选点」：可切换 OpenStreetMap 街�
 
 Android 的「读取本机信息和定位」在确认读取设备信息后请求系统位置权限，获取一次当前位置并显示精度。仅获取前台位置，不持续跟踪；拒绝权限、位置服务关闭或超时不影响设备信息读取。坐标只填入编辑区，需核对城市并点击「保存」。
 
+Windows、Linux 和 macOS GUI 的设备页支持「获取本机系统定位」：最多等待 60 秒，可取消；成功显示定位精度、填写坐标并自动识别城市，仍需手动保存。电脑定位可能较粗，请用卫星图校准操场。拒绝权限、定位失败或取消不会改动原坐标。
+
+- Windows 使用 WinRT；需在系统的「隐私和安全性 → 位置」允许位置服务及桌面应用访问。
+- macOS 使用 Core Location；请启动发布包中的 `NekoSportsWorldTool.app`，按系统提示授权。应用包包含定位用途说明；裸二进制不能申请定位权限。
+- Linux GUI 使用系统 D-Bus 的 GeoClue2，需安装并启用 GeoClue2、允许桌面位置访问，且桌面会话需要支持定位授权。GUI 包附带 `org.nekosportsworld.tool.desktop`；将程序放入 PATH，并把该文件安装至 `~/.local/share/applications/` 后从应用启动器打开。缺少服务或授权时仍可使用地图选点。Linux CLI 包继续独立提供。
+
 青龙定时任务：首次手工 `login --remember` 一次，之后定时挂 `run` 即可。
 
 ## 常见问题

@@ -23,12 +23,27 @@ pub struct DevicePage {
     saved_flash: f32,
     picker: Option<super::location_picker::LocationPicker>,
     pub(super) city_lookup: super::city_lookup::CityLookup,
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    desktop_location: Option<crate::desktop_location::Request>,
 }
 
 impl App {
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    pub(super) fn poll_system_location(&mut self) {
+        let Some(request) = self.device_page.desktop_location.as_mut() else { return };
+        let Some(result) = request.poll() else { return };
+        self.device_page.desktop_location = None;
+        self.apply_system_location(result);
+    }
+
     #[cfg(target_os = "android")]
     pub(super) fn poll_system_location(&mut self) {
         let Some(result) = crate::android::take_location() else { return };
+        self.apply_system_location(result);
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn apply_system_location(&mut self, result: Result<crate::location::Coordinate, String>) {
         match result {
             Ok(coordinate) => {
                 self.device_buf.anchor_lat = coordinate.latitude;
@@ -125,6 +140,26 @@ impl App {
                 crate::android::request_device_info(false);
             }
             if locating { ui.label("正在获取系统定位（最多 60 秒）；城市需手动核对。"); }
+        }
+
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        {
+            if ui.add_enabled(page.desktop_location.is_none(), egui::Button::new("获取本机系统定位")).clicked() {
+                match crate::desktop_location::Request::start() {
+                    Ok(request) => {
+                        page.desktop_location = Some(request);
+                        self.status = "正在获取本机系统定位，请按系统提示授权…".into();
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            if page.desktop_location.is_some() {
+                ui.label("正在定位（最多 60 秒）；电脑定位精度可能较低，请用卫星图核对操场。");
+                if ui.button("取消定位").clicked() {
+                    page.desktop_location = None;
+                    self.status = "已取消定位，原坐标保留".into();
+                }
+            }
         }
 
         ui.add_space(6.0);

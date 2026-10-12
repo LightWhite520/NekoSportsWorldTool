@@ -112,7 +112,7 @@ impl eframe::App for App {
         self.poll_online_osm();
         #[cfg(target_os = "android")]
         self.poll_device_info();
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "windows", target_os = "linux", target_os = "macos"))]
         self.poll_system_location();
         self.device_page.city_lookup.poll((self.device_buf.anchor_lat, self.device_buf.anchor_lon), &mut self.device_buf.city);
         crate::platform::set_keep_screen_on(self.run_busy || self.ai_busy || self.login_busy);
