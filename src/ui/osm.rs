@@ -10,8 +10,7 @@ use super::{theme, App};
 
 pub struct OsmPage {
     pub path: String,
-    loading_path: String,
-    local_rx: Option<std::sync::mpsc::Receiver<Result<route_planner::RoadGraph, String>>>,
+    load_rx: Option<std::sync::mpsc::Receiver<Result<LoadedRoads, String>>>,
     pub busy: bool,
     pub status: String,
     pub map: MapState,
@@ -19,16 +18,21 @@ pub struct OsmPage {
     pub(super) online_center: Option<(f64, f64)>,
     pub(super) radius: u32,
     pub(super) picker: Option<super::location_picker::LocationPicker>,
-    pub(super) online_rx:
-        Option<std::sync::mpsc::Receiver<Result<super::online_osm::Download, String>>>,
+}
+
+enum LoadedRoads {
+    Local {
+        path: String,
+        network: route_planner::RoadGraph,
+    },
+    Online(super::online_osm::Download),
 }
 
 impl Default for OsmPage {
     fn default() -> Self {
         OsmPage {
             path: String::new(),
-            loading_path: String::new(),
-            local_rx: None,
+            load_rx: None,
             busy: false,
             status: String::new(),
             map: MapState::default(),
@@ -36,7 +40,6 @@ impl Default for OsmPage {
             online_center: None,
             radius: 1000,
             picker: None,
-            online_rx: None,
         }
     }
 }
@@ -247,70 +250,49 @@ impl App {
         self.osm_page.map.interact(ui, canvas);
     }
 
-    /// Apply only successful downloads; failures preserve the loaded network and config.
+    /// Failed loads preserve the current network and saved source.
     pub(super) fn poll_online_osm(&mut self) {
-        if let Some(receiver) = &self.osm_page.local_rx {
-            let result = match receiver.try_recv() {
-                Ok(result) => Some(result),
-                Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    Some(Err("本地路网加载线程已退出".into()))
-                }
-            };
-            if let Some(result) = result {
-                self.osm_page.local_rx = None;
-                self.osm_page.busy = false;
-                match result {
-                    Ok(network) => {
-                        self.config.osm_path = self.osm_page.loading_path.clone();
-                        self.config.road_cache_path.clear();
-                        self.osm_page.fitted = false;
-                        self.run_page.preview_stale = true;
-                        self.osm_page.status = format!(
-                            "√ 已导入本地路网：{} 节点 / {} 建筑",
-                            network.graph.node_count(),
-                            network.buildings.len()
-                        );
-                        self.network = Some(Arc::new(network));
-                        if let Err(error) = crate::api::model::save_config(&self.config) {
-                            self.osm_page
-                                .status
-                                .push_str(&format!("；配置保存失败：{error}"));
-                        }
-                    }
-                    Err(error) => self.osm_page.status = error,
-                }
-            }
-        }
-        let Some(receiver) = self.osm_page.online_rx.as_ref() else {
+        let Some(receiver) = self.osm_page.load_rx.as_ref() else {
             return;
         };
         let result = match receiver.try_recv() {
             Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err("路网下载线程已退出，请重试".into())
+                Err("路网加载线程已退出，请重试".into())
             }
         };
-        self.osm_page.online_rx = None;
+        self.osm_page.load_rx = None;
         self.osm_page.busy = false;
         match result {
-            Ok(download) => {
-                self.config.osm_path.clear();
-                self.config.road_cache_path = download.path.display().to_string();
+            Ok(loaded) => {
+                let (network, source) = match loaded {
+                    LoadedRoads::Local { path, network } => {
+                        self.config.osm_path = path;
+                        self.config.road_cache_path.clear();
+                        (network, "已导入本地")
+                    }
+                    LoadedRoads::Online(download) => {
+                        self.config.osm_path.clear();
+                        self.config.road_cache_path = download.path.display().to_string();
+                        (
+                            download.network,
+                            if download.cached {
+                                "已读取缓存"
+                            } else {
+                                "已下载并缓存"
+                            },
+                        )
+                    }
+                };
                 self.osm_page.fitted = false;
                 self.run_page.preview_stale = true;
                 self.osm_page.status = format!(
-                    "√ {}路网：{} 节点 / {} 建筑",
-                    if download.cached {
-                        "已读取缓存"
-                    } else {
-                        "已下载并缓存"
-                    },
-                    download.network.graph.node_count(),
-                    download.network.buildings.len()
+                    "√ {source}路网：{} 节点 / {} 建筑",
+                    network.graph.node_count(),
+                    network.buildings.len()
                 );
-                self.network = Some(Arc::new(download.network));
+                self.network = Some(Arc::new(network));
                 if let Err(error) = crate::api::model::save_config(&self.config) {
                     self.osm_page
                         .status
@@ -331,11 +313,12 @@ impl App {
         };
         let radius = self.osm_page.radius;
         let (sender, receiver) = std::sync::mpsc::channel();
-        self.osm_page.online_rx = Some(receiver);
+        self.osm_page.load_rx = Some(receiver);
         self.osm_page.busy = true;
         self.osm_page.status = format!("正在下载附近 {radius} 米路网…");
         std::thread::spawn(move || {
-            let _ = sender.send(super::online_osm::download(coordinate, radius));
+            let _ = sender
+                .send(super::online_osm::download(coordinate, radius).map(LoadedRoads::Online));
         });
     }
 
@@ -344,15 +327,15 @@ impl App {
             return;
         }
         self.osm_page.path = path.clone();
-        self.osm_page.loading_path = path.clone();
         self.osm_page.busy = true;
         self.osm_page.status = format!("正在导入本地路网：{path}");
         let (sender, receiver) = std::sync::mpsc::channel();
-        self.osm_page.local_rx = Some(receiver);
+        self.osm_page.load_rx = Some(receiver);
         std::thread::spawn(move || {
-            let result = std::fs::read(path)
+            let result = std::fs::read(&path)
                 .map_err(|error| format!("读取本地路网失败：{error}"))
-                .and_then(|bytes| route_planner::load_osm(&bytes));
+                .and_then(|bytes| route_planner::load_osm(&bytes))
+                .map(|network| LoadedRoads::Local { path, network });
             let _ = sender.send(result);
         });
     }
@@ -362,11 +345,12 @@ impl App {
         self.osm_page.busy = true;
         self.osm_page.status = "正在读取已下载路网…".into();
         let (sender, receiver) = std::sync::mpsc::channel();
-        self.osm_page.online_rx = Some(receiver);
+        self.osm_page.load_rx = Some(receiver);
         std::thread::spawn(move || {
-            let _ = sender.send(super::online_osm::load_cache(std::path::PathBuf::from(
-                path,
-            )));
+            let _ = sender.send(
+                super::online_osm::load_cache(std::path::PathBuf::from(path))
+                    .map(LoadedRoads::Online),
+            );
         });
     }
 }

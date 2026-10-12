@@ -44,6 +44,7 @@ chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
+# rfd 无 Android 后端，仅在桌面目标编译（调用点 osm.rs 已按 cfg 门控）
 rfd = { version = "0.15", optional = true }
 ureq = { version = "2", default-features = false, features = ["native-certs"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
