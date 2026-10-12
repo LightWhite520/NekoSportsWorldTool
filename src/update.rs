@@ -290,6 +290,12 @@ pub fn apply(binary: &[u8]) -> Result<(), String> {
     let file = exe.file_name().and_then(|n| n.to_str()).ok_or("exe 文件名异常")?;
     let new = dir.join(format!("{file}.new"));
     let old = dir.join(format!("{file}.old"));
+    #[cfg(target_os = "macos")]
+    let old = exe.ancestors()
+        .find(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .and_then(|bundle| bundle.parent())
+        .map(|parent| parent.join(format!(".neko-update-{}.old", std::process::id())))
+        .unwrap_or(old);
     {
         use std::io::Write;
         let mut f = std::fs::File::create(&new)
@@ -311,6 +317,27 @@ pub fn apply(binary: &[u8]) -> Result<(), String> {
     if let Err(e) = std::fs::rename(&new, &exe) {
         let _ = std::fs::rename(&old, &exe);
         return Err(format!("替换程序失败: {e}"));
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = exe.ancestors().find(|path| path.extension().is_some_and(|ext| ext == "app")) {
+        // The release is an ad-hoc signed app bundle. Replacing its executable
+        // invalidates the bundle seal; restore it before relaunching.
+        let signed = std::process::Command::new("/usr/bin/codesign")
+            .args(["--force", "--deep", "--sign", "-"])
+            .arg(bundle)
+            .status();
+        if !signed.is_ok_and(|status| status.success()) {
+            let _ = std::fs::remove_file(&exe);
+            std::fs::rename(&old, &exe).map_err(|error| format!("应用签名失败且回滚失败：{error}"))?;
+            let _ = std::process::Command::new("/usr/bin/codesign")
+                .args(["--force", "--deep", "--sign", "-"])
+                .arg(bundle)
+                .status();
+            return Err("macOS 应用签名失败，已恢复旧程序；请下载新的应用包".into());
+        }
+        // Keep rollback files outside the signed bundle, then remove them once
+        // signing succeeds; deleting sealed resources would invalidate it again.
+        let _ = std::fs::remove_file(&old);
     }
     Ok(())
 }
