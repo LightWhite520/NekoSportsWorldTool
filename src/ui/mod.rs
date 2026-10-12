@@ -11,13 +11,17 @@ pub mod about;
 pub mod ai;
 pub mod data;
 pub mod device;
+mod city_lookup;
 pub mod fonts;
 pub mod jobs;
 pub mod log;
+pub mod location_picker;
+mod sports_places;
 pub mod map;
 pub mod mobile;
 pub mod msgs;
 pub mod osm;
+mod online_osm;
 pub mod records;
 pub mod run;
 pub mod theme;
@@ -91,8 +95,6 @@ pub struct App {
     /// 已加载的 OSM 路网（真实道路路由 + 地图显示共用）。
     pub network: Option<Arc<route_planner::RoadGraph>>,
     pub osm_page: osm::OsmPage,
-    net_tx: Sender<Result<Arc<route_planner::RoadGraph>, String>>,
-    net_rx: Receiver<Result<Arc<route_planner::RoadGraph>, String>>,
 }
 
 impl eframe::App for App {
@@ -107,8 +109,12 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_messages();
+        self.poll_online_osm();
         #[cfg(target_os = "android")]
         self.poll_device_info();
+        #[cfg(target_os = "android")]
+        self.poll_system_location();
+        self.device_page.city_lookup.poll((self.device_buf.anchor_lat, self.device_buf.anchor_lon), &mut self.device_buf.city);
         crate::platform::set_keep_screen_on(self.run_busy || self.ai_busy || self.login_busy);
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
 
@@ -311,7 +317,6 @@ impl eframe::App for App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
-        let (net_tx, net_rx) = std::sync::mpsc::channel();
         let font_loaded = fonts::install(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
         let identity = model::load_identity();
@@ -378,12 +383,7 @@ impl App {
             device_page: device::DevicePage::default(),
             update: about::UpdateUi::default(),
             network: None,
-            osm_page: osm::OsmPage {
-                path: config.osm_path.clone(),
-                ..Default::default()
-            },
-            net_tx,
-            net_rx,
+            osm_page: osm::OsmPage::default(),
         };
         if app.font_loaded.is_none() {
             app.log
@@ -410,10 +410,12 @@ impl App {
             app.refresh_fence();
             app.refresh_points();
         }
-        // 已配置 OSM 路网则启动时后台加载
+        // 恢复最近成功加载的本地文件或在线缓存。
         if !app.config.osm_path.is_empty() {
-            let path = app.config.osm_path.clone();
-            app.load_osm_async(path);
+            app.load_osm_async(app.config.osm_path.clone());
+        } else if !app.config.road_cache_path.is_empty() {
+            let path = app.config.road_cache_path.clone();
+            app.restore_road_cache(path);
         }
         app
     }

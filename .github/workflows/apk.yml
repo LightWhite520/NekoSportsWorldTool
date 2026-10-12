@@ -34,8 +34,9 @@ name: APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/map-location-picker]
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 permissions:

@@ -173,6 +173,11 @@ pub fn parse_osm(bytes: &[u8]) -> Result<ParsedOsm, String> {
                                 .iter()
                                 .find(|(k, _)| k == "highway")
                                 .map(|(_, v)| v.clone())
+                                .or_else(|| {
+                                    let tagged = |key: &str, value: &str| tags.iter().any(|(k,v)| k == key && v == value);
+                                    let running = tags.iter().any(|(k,v)| k == "sport" && v.split(';').any(|sport| matches!(sport, "running" | "athletics")));
+                                    (tagged("leisure", "track") && running && !tagged("area", "yes")).then(|| "footway".to_owned())
+                                })
                             {
                                 if !is_motorized(&h) && refs.len() >= 2 {
                                     let oneway = tags.iter().any(|(k, v)| {
@@ -323,7 +328,7 @@ pub fn build_graph(parsed: &ParsedOsm) -> RoadGraph {
 pub fn load_osm(bytes: &[u8]) -> Result<RoadGraph, String> {
     let parsed = parse_osm(bytes)?;
     if parsed.roads.is_empty() {
-        return Err("OSM 中未找到可用的 highway 道路".into());
+        return Err("OSM 中未找到可用道路或标注的跑道线".into());
     }
     Ok(build_graph(&parsed))
 }
@@ -334,4 +339,25 @@ fn geo_haversine(a: Coord, b: Coord) -> f64 {
     let pa = geo::Point::new(a.lon, a.lat);
     let pb = geo::Point::new(b.lon, b.lat);
     pa.haversine_distance(&pb)
+}
+
+#[cfg(test)]
+mod running_track_tests {
+    use super::*;
+    #[test]
+    fn running_track_lines_connect_but_pitch_and_track_areas_do_not() {
+        let prefix = r#"<osm><node id="1" lat="23.14" lon="113.32"/><node id="2" lat="23.141" lon="113.321"/><way id="10"><nd ref="1"/><nd ref="2"/>"#;
+        for (tags, expected) in [
+            (r#"<tag k="leisure" v="track"/><tag k="sport" v="running"/>"#, true),
+            (r#"<tag k="leisure" v="track"/><tag k="sport" v="athletics"/>"#, true),
+            (r#"<tag k="leisure" v="track"/><tag k="sport" v="cycling"/>"#, false),
+            (r#"<tag k="leisure" v="track"/><tag k="sport" v="running"/><tag k="area" v="yes"/>"#, false),
+            (r#"<tag k="leisure" v="pitch"/><tag k="sport" v="soccer"/>"#, false),
+        ] {
+            let xml = format!("{prefix}{tags}</way></osm>");
+            let result = load_osm(xml.as_bytes());
+            assert_eq!(result.is_ok(), expected);
+            if let Ok(network) = result { assert_eq!(network.graph.edge_count(), 2); }
+        }
+    }
 }

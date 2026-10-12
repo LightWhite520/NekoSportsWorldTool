@@ -19,6 +19,14 @@ public final class MainActivity extends NativeActivity {
     private AlertDialog deviceInfoDialog;
     private boolean taskActive;
     private boolean resumed;
+    private final SystemLocation systemLocation = new SystemLocation(this, (json, error) -> nativeLocation(json, error));
+    private native void nativeLocation(String json, String error);
+    private native void nativeLocationStarted();
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == SystemLocation.PERMISSION) systemLocation.permissionsResult();
+    }
 
     private native void nativeSubmitEdit(long id, String value);
     private native void nativeSetInsets(int left, int top, int right, int bottom);
@@ -34,8 +42,9 @@ public final class MainActivity extends NativeActivity {
                 : "允许后只填写设备页，点击“保存”后用于后续登录和业务请求。";
             AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("读取本机信息")
-                .setMessage("是否允许读取本机品牌、型号和 Android 系统版本？\n\n" + purpose
+                .setMessage("是否允许读取本机品牌、型号和 Android 系统版本，并获取当前位置？\n\n" + purpose
                     + "品牌仅用于设备页展示。"
+                    + "\n定位会请求系统位置权限，只填入设备页；请核对城市和坐标后点击保存。拒绝位置权限不影响读取设备信息。"
                     + "\n\n设备 UUID 继续沿用本应用首次生成并保存的值，不会更换。拒绝后仍可手动填写，也可在设备页再次读取。")
                 .setPositiveButton("允许读取", (ignored, which) -> {
                     // First-run completion is acknowledged only after Rust saves it.
@@ -48,6 +57,8 @@ public final class MainActivity extends NativeActivity {
                         info.put("model", android.os.Build.MODEL);
                         info.put("os_version", android.os.Build.VERSION.RELEASE);
                         nativeDeviceInfo(initial, info.toString(), "");
+                        nativeLocationStarted();
+                        systemLocation.request();
                     } catch (Exception error) {
                         nativeDeviceInfo(initial, "", "读取本机信息失败，请在设备页重试或手动填写");
                     }
@@ -219,12 +230,14 @@ public final class MainActivity extends NativeActivity {
     }
 
     @Override protected void onPause() {
+        systemLocation.pause();
         resumed = false;
         updateScreenPolicy();
         super.onPause();
     }
 
     @Override protected void onDestroy() {
+        systemLocation.cancel();
         if (editorDialog != null) editorDialog.dismiss();
         if (deviceInfoDialog != null) deviceInfoDialog.dismiss();
         taskActive = false;

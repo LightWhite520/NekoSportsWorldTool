@@ -12,6 +12,34 @@ static EDITS: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
 static SCREEN_ON: AtomicBool = AtomicBool::new(false);
 static SAFE_INSETS: Mutex<[i32; 4]> = Mutex::new([0; 4]);
 static DEVICE_INFO: Mutex<Option<DeviceInfoReply>> = Mutex::new(None);
+static LOCATION_REPLY: Mutex<Option<Result<crate::location::Coordinate, String>>> = Mutex::new(None);
+static LOCATION_PENDING: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn location_pending() -> bool { LOCATION_PENDING.load(Ordering::Relaxed) }
+pub(crate) fn take_location() -> Option<Result<crate::location::Coordinate, String>> {
+    LOCATION_REPLY.lock().unwrap().take()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_nekosportsworld_tool_MainActivity_nativeLocationStarted(
+    _env: JNIEnv<'_>, _activity: JObject<'_>,
+) {
+    LOCATION_PENDING.store(true, Ordering::Relaxed);
+    *LOCATION_REPLY.lock().unwrap() = None;
+    if let Some(context) = CONTEXT.lock().unwrap().as_ref() { context.request_repaint(); }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_nekosportsworld_tool_MainActivity_nativeLocation(
+    mut env: JNIEnv<'_>, _activity: JObject<'_>, json: JString<'_>, error: JString<'_>,
+) {
+    let json: String = env.get_string(&json).map(|value| value.into()).unwrap_or_default();
+    let error: String = env.get_string(&error).map(|value| value.into()).unwrap_or_default();
+    let result = if error.is_empty() { crate::location::Coordinate::from_system_json(&json) } else { Err(error) };
+    *LOCATION_REPLY.lock().unwrap() = Some(result);
+    LOCATION_PENDING.store(false, Ordering::Relaxed);
+    if let Some(context) = CONTEXT.lock().unwrap().as_ref() { context.request_repaint(); }
+}
 
 pub(crate) struct DeviceInfoReply {
     pub initial: bool,
@@ -27,6 +55,8 @@ fn android_main(app: AndroidApp) {
     *APP.lock().unwrap() = Some(app.clone());
     EDITS.get_or_init(Default::default).lock().unwrap().clear();
     *DEVICE_INFO.lock().unwrap() = None;
+    *LOCATION_REPLY.lock().unwrap() = None;
+    LOCATION_PENDING.store(false, Ordering::Relaxed);
     SCREEN_ON.store(false, Ordering::Relaxed);
     let options = eframe::NativeOptions {
         run_and_return: false,
