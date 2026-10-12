@@ -32,11 +32,16 @@ fn repos() -> Vec<String> {
 
 /// 当前平台对应的 Release 资产名；无匹配产物的平台返回 None。
 pub fn asset_name() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
+    platform_asset(std::env::consts::OS, std::env::consts::ARCH, cfg!(feature = "gui"))
+}
+
+fn platform_asset(os: &str, arch: &str, gui: bool) -> Option<&'static str> {
+    match (os, arch) {
         ("windows", "x86_64") => Some("NekoSportsWorldTool-win-x64.zip"),
         ("macos", "aarch64") => Some("NekoSportsWorldTool-macos-arm64.tar.gz"),
+        ("linux", "x86_64") if gui => Some("NekoSportsWorldTool-linux-x64-gui.tar.gz"),
         ("linux", "x86_64") => Some("NekoSportsWorldTool-linux-x64.tar.gz"),
-        ("linux", "aarch64") => Some("NekoSportsWorldTool-linux-aarch64.tar.gz"),
+        ("linux", "aarch64") if !gui => Some("NekoSportsWorldTool-linux-aarch64.tar.gz"),
         ("android", "aarch64") => Some("NekoSportsWorldTool-android-arm64.apk"),
         _ => None,
     }
@@ -388,6 +393,10 @@ mod tests {
         assert_eq!(exact.unwrap().name, "NekoSportsWorldTool-win-x64.zip");
         // 桌面产物必须精确匹配
         assert!(pick_asset(&mk(&["wrong.zip"]), "NekoSportsWorldTool-win-x64.zip").is_none());
+        let linux_gui = platform_asset("linux", "x86_64", true).unwrap();
+        let linux_cli = platform_asset("linux", "x86_64", false).unwrap();
+        assert!(pick_asset(&mk(&[linux_cli]), linux_gui).is_none());
+        assert_eq!(pick_asset(&mk(&[linux_cli, linux_gui]), linux_gui).unwrap().name, linux_gui);
         // APK 模糊匹配：先精确、再 arm64、再任意 apk
         let apk = pick_asset(&mk(&["NekoSportsWorldTool-0.2.5-android.2-arm64.apk"]), "NekoSportsWorldTool-android-arm64.apk");
         assert_eq!(apk.unwrap().name, "NekoSportsWorldTool-0.2.5-android.2-arm64.apk");
