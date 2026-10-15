@@ -7,6 +7,7 @@
 //! __IP_DONE__ / __LOGIN_DONE__ / __RUN_DONE__ / __AI_DONE__ / __RECORDS__ / __AI_LIST__
 //! __SEMESTER__ / __CHEAT__ / __RANK__ / __USER__ / __AI_RECORDS__
 
+mod login_backup;
 pub mod about;
 pub mod ai;
 pub mod data;
@@ -60,6 +61,7 @@ pub struct PopupInfo {
 /// 顶层 App。
 pub struct App {
     pub tx: Sender<String>,
+    pub active_jobs: Arc<std::sync::atomic::AtomicUsize>,
     pub rx: Receiver<String>,
     pub log: log::LogStore,
     pub font_loaded: Option<String>,
@@ -74,6 +76,7 @@ pub struct App {
     pub password: String,
     pub remember: bool,
     pub login_busy: bool,
+    pub backup_busy: bool,
     pub run_busy: bool,
     pub ai_busy: bool,
     pub records_busy: bool,
@@ -109,6 +112,7 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_messages();
+        self.poll_login_backup();
         self.poll_online_osm();
         #[cfg(target_os = "android")]
         self.poll_device_info();
@@ -120,6 +124,7 @@ impl eframe::App for App {
 
         // ── 顶栏 ────────────────────────────────────────────────
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
+            if self.backup_busy { ui.disable(); }
             ui.add_space(6.0);
             let compact = mobile::compact_ui(ui);
             let logged = self.session.is_some();
@@ -207,7 +212,8 @@ impl eframe::App for App {
                         ui.end_row();
                     });
             }
-            if login_clicked {
+            self.login_backup_controls(ui);
+            if login_clicked && !self.backup_busy {
                 if logged {
                     self.do_logout();
                 } else {
@@ -271,6 +277,7 @@ impl eframe::App for App {
 
         // ── 标签页 ──────────────────────────────────────────────
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.backup_busy { ui.disable(); }
             mobile::tab_bar(ui, &mut self.tab);
             ui.separator();
             match self.tab {
@@ -329,6 +336,7 @@ impl App {
 
         let mut app = Self {
             tx: tx.clone(),
+            active_jobs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             rx,
             log: log::LogStore::default(),
             font_loaded,
@@ -341,6 +349,7 @@ impl App {
             password,
             remember,
             login_busy: false,
+            backup_busy: false,
             run_busy: false,
             ai_busy: false,
             records_busy: false,
@@ -426,7 +435,16 @@ impl App {
         F: FnOnce(Sender<String>) + Send + 'static,
     {
         let tx = self.tx.clone();
-        std::thread::spawn(move || f(tx));
+        let active = self.active_jobs.clone();
+        active.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        std::thread::spawn(move || {
+            struct JobGuard(Arc<std::sync::atomic::AtomicUsize>);
+            impl Drop for JobGuard {
+                fn drop(&mut self) { self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel); }
+            }
+            let _guard = JobGuard(active);
+            f(tx);
+        });
     }
 
     pub fn logger(tx: Sender<String>) -> impl FnMut(&str) {
