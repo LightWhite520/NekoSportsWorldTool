@@ -5,6 +5,25 @@ use std::{io::Read, path::PathBuf, time::Duration};
 
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const CACHE_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+
+// Do not echo request URLs or server response bodies into user-facing logs.
+pub(super) fn request_error(error: ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(status, response) => {
+            let wait = response
+                .header("Retry-After")
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .map(|seconds| format!("请至少等待 {seconds} 秒后手动重试"))
+                .unwrap_or_else(|| "请稍后手动重试".into());
+            match status {
+                429 => format!("路网服务请求过多（HTTP 429）；{wait}"),
+                503 | 504 => format!("路网服务繁忙或超时（HTTP {status}）；{wait}，或缩小查询范围"),
+                _ => format!("路网服务请求失败（HTTP {status}），请稍后重试"),
+            }
+        }
+        ureq::Error::Transport(_) => "路网服务连接失败或超时，请检查网络后手动重试".into(),
+    }
+}
 pub(super) struct Download {
     pub network: RoadGraph,
     pub path: PathBuf,
@@ -101,7 +120,7 @@ pub(super) fn download(center: Coordinate, radius: u32) -> Result<Download, Stri
             ),
         )
         .send_form(&[("data", &query)])
-        .map_err(|error| format!("在线路网下载失败：{error}；请稍后重试或缩小下载半径"))?;
+        .map_err(request_error)?;
     let mut bytes = Vec::new();
     response
         .into_reader()
@@ -130,6 +149,26 @@ pub(super) fn download(center: Coordinate, radius: u32) -> Result<Download, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_limit_and_service_failures_offer_bounded_manual_retry() {
+        for status in [429, 503, 504] {
+            let response: ureq::Response =
+                format!("HTTP/1.1 {status} Busy\r\nRetry-After: 120\r\n\r\nprivate response")
+                    .parse()
+                    .unwrap();
+            let message = request_error(ureq::Error::Status(status, response));
+            assert!(message.contains(&status.to_string()));
+            assert!(message.contains("120 秒"));
+            assert!(!message.contains("private response"));
+        }
+        for header in ["", "Retry-After: invalid\r\n", "Retry-After: -1\r\n"] {
+            let response = format!("HTTP/1.1 429 Busy\r\n{header}\r\n")
+                .parse()
+                .unwrap();
+            assert!(request_error(ureq::Error::Status(429, response)).contains("稍后手动重试"));
+        }
+    }
 
     #[test]
     fn restores_downloaded_cache_and_rejects_external_imports() {

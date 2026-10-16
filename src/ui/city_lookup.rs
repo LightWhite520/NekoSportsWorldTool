@@ -82,6 +82,23 @@ impl CityLookup {
     }
 }
 
+// A point on a shared boundary has no unique city. Ask for manual confirmation.
+fn on_ring_boundary(ring: &[Coord], point: Coord) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    ring.iter().zip(ring.iter().cycle().skip(1)).any(|(a, b)| {
+        let dx = b.lon - a.lon;
+        let dy = b.lat - a.lat;
+        let length_sq = dx * dx + dy * dy;
+        if length_sq == 0.0 {
+            return false;
+        }
+        let t = (((point.lon - a.lon) * dx + (point.lat - a.lat) * dy) / length_sq).clamp(0.0, 1.0);
+        (point.lon - a.lon - t * dx).hypot(point.lat - a.lat - t * dy) <= 1e-9
+    })
+}
+
 fn containing_city(data: &serde_json::Value, coordinate: (f64, f64)) -> Result<String, String> {
     Coordinate::new(coordinate.0, coordinate.1, 0.0)?;
     let point = Coord::new(coordinate.1, coordinate.0);
@@ -114,6 +131,12 @@ fn containing_city(data: &serde_json::Value, coordinate: (f64, f64)) -> Result<S
                     .filter_map(|pair| Some(Coord::new(pair[0].as_f64()?, pair[1].as_f64()?)))
                     .collect()
             };
+            if rings
+                .iter()
+                .any(|value| on_ring_boundary(&ring(value), point))
+            {
+                return Err("位置位于城市边界，请手动确认城市".into());
+            }
             if rings
                 .first()
                 .is_some_and(|outer| point_in_polygon(&ring(outer), point))
@@ -167,6 +190,26 @@ fn lookup(coordinate: (f64, f64)) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn city_boundary_vertices_holes_and_unknown_regions_require_confirmation() {
+        let data = serde_json::json!({"features":[{"properties":{"level":"city","name":"测试城市"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[4,0],[4,4],[0,4],[0,0]],[[1,1],[2,1],[2,2],[1,2],[1,1]]]}}]});
+        for point in [
+            (0.0, 2.0),
+            (4.0, 2.0),
+            (2.0, 0.0),
+            (2.0, 4.0),
+            (0.0, 0.0),
+            (4.0, 4.0),
+            (1.0, 1.5),
+            (1.5, 1.5),
+            (5.0, 5.0),
+        ] {
+            assert!(containing_city(&data, point).is_err(), "{point:?}");
+        }
+        assert_eq!(containing_city(&data, (3.0, 3.0)).unwrap(), "测试城市");
+        assert!(containing_city(&data, (f64::NAN, 0.0)).is_err());
+        assert!(containing_city(&serde_json::json!({}), (0.0, 0.0)).is_err());
+    }
     #[test]
     fn city_polygons_respect_holes_and_districts_are_not_cities() {
         let data = serde_json::json!({"features":[{"properties":{"level":"district","name":"天河区"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[4,0],[4,4],[0,4],[0,0]]]}},{"properties":{"level":"city","name":"广州市"},"geometry":{"type":"MultiPolygon","coordinates":[[[[0,0],[4,0],[4,4],[0,4],[0,0]],[[1,1],[2,1],[2,2],[1,2],[1,1]]]]}}]});

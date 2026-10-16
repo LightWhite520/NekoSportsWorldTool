@@ -95,7 +95,7 @@ pub(super) fn find(center: (f64, f64)) -> Result<Vec<SportsPlace>, String> {
             ),
         )
         .send_form(&[("data", &query)])
-        .map_err(|error| error.to_string())?;
+        .map_err(super::online_osm::request_error)?;
     let mut bytes = Vec::new();
     response
         .into_reader()
