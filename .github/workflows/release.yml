@@ -68,7 +68,8 @@ jobs:
             cross: true
     runs-on: ${{ matrix.os }}
     env:
-      MODE: ${{ github.event.inputs.mode || matrix.mode }}
+      # CLI-only targets must not become GUI builds when dispatch selects full.
+      MODE: ${{ matrix.mode == 'cli' && 'cli' || github.event.inputs.mode || matrix.mode }}
       TARGET: ${{ matrix.target }}
       ARTIFACT: ${{ matrix.artifact }}
     steps:

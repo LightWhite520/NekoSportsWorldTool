@@ -38,6 +38,7 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                for error in &info.errors { ui.colored_label(theme::warn(), error); }
                 section(ui, "个人信息", |ui| {
                     let rows = profile_rows(&info.profile);
                     if rows.is_empty() {
@@ -53,7 +54,7 @@ impl App {
 
                 section(ui, "完成状态", |ui| {
                     if info.completed.is_null() {
-                        ui.label("（暂无有效记录）");
+                        ui.label(if info.errors.is_empty() { "（暂无完成状态数据）" } else { "（完成状态未知，本次查询未全部成功）" });
                     } else {
                         grid(ui, "done_grid", &localized(&info.completed));
                     }

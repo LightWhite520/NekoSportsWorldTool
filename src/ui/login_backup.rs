@@ -123,6 +123,10 @@ impl App {
         }
         match crate::login_archive::import(bytes, &self.config) {
             Ok((b, config)) => {
+                self.renew_session_jobs();
+                self.begin_network_load();
+                self.osm_page.busy = false;
+                self.auth_expired = false;
                 // Discard replies from the old account before refreshing the new one.
                 (self.tx, self.rx) = std::sync::mpsc::channel();
                 #[cfg(target_os = "android")]
@@ -160,7 +164,6 @@ impl App {
                 self.refresh_records();
                 self.refresh_user_page();
                 self.refresh_ai_list();
-                self.refresh_fence();
                 self.refresh_points();
                 self.status = "登录信息已导入；凭证是否有效以服务器校验为准".into();
             }
