@@ -86,14 +86,7 @@ pub(super) fn find(center: (f64, f64)) -> Result<Vec<SportsPlace>, String> {
         .timeout(Duration::from_secs(45))
         .build()
         .post("https://overpass-api.de/api/interpreter")
-        .set(
-            "User-Agent",
-            concat!(
-                "NekoSportsWorldTool/",
-                env!("CARGO_PKG_VERSION"),
-                " (+https://github.com/YanamiNeko/NekoSportsWorldTool)"
-            ),
-        )
+        .set("User-Agent", super::MAP_USER_AGENT)
         .send_form(&[("data", &query)])
         .map_err(super::online_osm::request_error)?;
     let mut bytes = Vec::new();

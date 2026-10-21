@@ -108,11 +108,11 @@ impl App {
         let mut center = self
             .osm_page
             .online_center
-            .unwrap_or((self.identity.anchor_lat, self.identity.anchor_lon));
+            .unwrap_or_else(|| super::coordinates::anchor_wgs84(&self.identity));
         super::mobile::row(ui, |ui| {
             ui.label("在线路网中心：");
             if ui.button("使用已保存锚点").clicked() {
-                center = (self.identity.anchor_lat, self.identity.anchor_lon);
+                center = super::coordinates::anchor_wgs84(&self.identity);
                 self.osm_page.picker = None;
             }
             if ui

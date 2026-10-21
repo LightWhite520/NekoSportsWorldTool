@@ -13,6 +13,8 @@ pub mod ai;
 pub mod data;
 pub mod device;
 mod city_lookup;
+mod coordinates;
+mod disk_cache;
 pub mod fonts;
 pub mod jobs;
 pub mod log;
@@ -27,6 +29,12 @@ pub mod records;
 pub mod run;
 pub mod theme;
 pub mod user;
+
+const MAP_USER_AGENT: &str = concat!(
+    "NekoSportsWorldTool/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/YanamiNeko/NekoSportsWorldTool)"
+);
 
 use crate::api::model::{self, Config, HeaderIdentity, Session};
 use eframe::egui;
@@ -118,7 +126,7 @@ impl eframe::App for App {
         self.poll_device_info();
         #[cfg(any(target_os = "android", target_os = "windows", target_os = "linux", target_os = "macos"))]
         self.poll_system_location();
-        self.device_page.city_lookup.poll((self.device_buf.anchor_lat, self.device_buf.anchor_lon), &mut self.device_buf.city);
+        self.device_page.city_lookup.poll(coordinates::anchor_wgs84(&self.device_buf), &mut self.device_buf.city);
         crate::platform::set_keep_screen_on(self.run_busy || self.ai_busy || self.login_busy);
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
 

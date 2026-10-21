@@ -40,8 +40,7 @@ impl App {
     fn apply_system_location(&mut self, result: Result<crate::location::Coordinate, String>) {
         match result {
             Ok(coordinate) => {
-                self.device_buf.anchor_lat = coordinate.latitude;
-                self.device_buf.anchor_lon = coordinate.longitude;
+                super::coordinates::set_anchor_wgs84(&mut self.device_buf, (coordinate.latitude, coordinate.longitude));
                 if self.device_page.picker.is_some() {
                     self.device_page.picker = Some(super::location_picker::LocationPicker::new((coordinate.latitude, coordinate.longitude)));
                 }
@@ -202,7 +201,7 @@ impl App {
         let valid_anchor = self.device_buf.anchor_coordinate().is_ok();
         if ui.add_enabled(valid_anchor, egui::Button::new("自动识别城市")).clicked() {
             self.device_buf.city.clear();
-            page.city_lookup.request((self.device_buf.anchor_lat, self.device_buf.anchor_lon));
+            page.city_lookup.request(super::coordinates::anchor_wgs84(&self.device_buf));
         }
         if !page.city_lookup.status.is_empty() { ui.label(&page.city_lookup.status); }
         let toggle = if page.picker.is_some() {
@@ -217,22 +216,18 @@ impl App {
             page.picker = if page.picker.is_some() {
                 None
             } else {
-                Some(super::location_picker::LocationPicker::new((
-                    self.device_buf.anchor_lat,
-                    self.device_buf.anchor_lon,
-                )))
+                Some(super::location_picker::LocationPicker::new(super::coordinates::anchor_wgs84(&self.device_buf)))
             };
         }
         if let Some(picker) = page.picker.as_mut() {
             if let Some((lat, lon)) =
-                picker.draw(ui, (self.device_buf.anchor_lat, self.device_buf.anchor_lon))
+                picker.draw(ui, super::coordinates::anchor_wgs84(&self.device_buf))
             {
-                self.device_buf.anchor_lat = lat;
-                self.device_buf.anchor_lon = lon;
+                super::coordinates::set_anchor_wgs84(&mut self.device_buf, (lat, lon));
                 self.status = "已选择地图坐标；请核对城市，点击保存后生效".into();
             }
             ui.label(format!(
-                "所选点：纬度 {:.7}，经度 {:.7}",
+                "所选锚点（BD-09）：纬度 {:.7}，经度 {:.7}",
                 self.device_buf.anchor_lat, self.device_buf.anchor_lon
             ));
             mobile::row(ui, |ui| {
@@ -254,7 +249,7 @@ impl App {
         }
         ui.colored_label(
             theme::text_dim(),
-            "定位锚点填写顺序：先填纬度，再填经度；地图常见的“经度,纬度”格式需要调换后填写。",
+            "手填锚点使用 BD-09：先纬度、后经度。系统定位和地图 WGS84 选点会自动转换。",
         );
         ui.colored_label(
             theme::text_dim(),

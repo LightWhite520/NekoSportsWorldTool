@@ -62,6 +62,8 @@ pub(super) fn load_cache(path: PathBuf) -> Result<Download, String> {
         .join("online_roads")
         .canonicalize()
         .map_err(|_| "未找到在线路网缓存，请重新下载")?;
+    super::disk_cache::prepare(&cache, super::disk_cache::ROAD_LIMIT)
+        .map_err(|_| "无法整理路网缓存，请检查磁盘空间与写入权限")?;
     let resolved = path
         .canonicalize()
         .map_err(|_| "路网缓存已不存在，请重新下载")?;
@@ -84,6 +86,8 @@ pub(super) fn load_cache(path: PathBuf) -> Result<Download, String> {
 pub(super) fn download(center: Coordinate, radius: u32) -> Result<Download, String> {
     let query = query(center, radius)?;
     let cache = crate::platform::data_dir().join("online_roads");
+    super::disk_cache::prepare(&cache, super::disk_cache::ROAD_LIMIT)
+        .map_err(|_| "无法整理路网缓存，请检查磁盘空间与写入权限")?;
     let path = cache.join(format!(
         "v2-{:.7}-{:.7}-{radius}.osm",
         center.latitude, center.longitude
@@ -111,14 +115,7 @@ pub(super) fn download(center: Coordinate, radius: u32) -> Result<Download, Stri
         .build();
     let response = agent
         .post("https://overpass-api.de/api/interpreter")
-        .set(
-            "User-Agent",
-            concat!(
-                "NekoSportsWorldTool/",
-                env!("CARGO_PKG_VERSION"),
-                " (+https://github.com/YanamiNeko/NekoSportsWorldTool)"
-            ),
-        )
+        .set("User-Agent", super::MAP_USER_AGENT)
         .send_form(&[("data", &query)])
         .map_err(request_error)?;
     let mut bytes = Vec::new();
@@ -128,17 +125,8 @@ pub(super) fn download(center: Coordinate, radius: u32) -> Result<Download, Stri
         .read_to_end(&mut bytes)
         .map_err(|error| format!("读取路网失败：{error}"))?;
     let network = parse(&bytes)?;
-    std::fs::create_dir_all(&cache).map_err(|error| format!("创建路网缓存失败：{error}"))?;
-    let temporary = cache.join(format!("{}.tmp", uuid::Uuid::new_v4()));
-    let stored = (|| {
-        std::fs::write(&temporary, &bytes)?;
-        if path.exists() {
-            std::fs::remove_file(&path)?;
-        }
-        std::fs::rename(&temporary, &path)
-    })();
-    let _ = std::fs::remove_file(&temporary);
-    stored.map_err(|error| format!("保存路网失败：{error}"))?;
+    super::disk_cache::store(&cache, super::disk_cache::ROAD_LIMIT, &[(&path, &bytes)])
+        .map_err(|_| "保存路网失败：请检查磁盘空间与写入权限")?;
     Ok(Download {
         network,
         path,

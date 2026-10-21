@@ -29,6 +29,7 @@ pub struct HeaderIdentity {
     /// 本地展示的制造商品牌；不改变服务端 deviceName（机型）字段。
     #[serde(default)]
     pub manufacturer: String,
+    /// Persisted BD-09 anchor. WGS84 system/map coordinates must be converted first.
     #[serde(default = "default_anchor_lat")]
     pub anchor_lat: f64,
     #[serde(default = "default_anchor_lon")]

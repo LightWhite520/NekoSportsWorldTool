@@ -34,7 +34,7 @@ impl CityLookup {
             if valid.is_ok()
                 && (!first
                     || ((city.trim().is_empty() || city.trim() == "大连市")
-                        && !valid.unwrap().is_default_dalian()))
+                        && !is_default_wgs84(coordinate)))
             {
                 city.clear();
                 self.request(coordinate);
@@ -80,6 +80,12 @@ impl CityLookup {
             });
         }
     }
+}
+
+fn is_default_wgs84(coordinate: (f64, f64)) -> bool {
+    let anchor = crate::location::default_anchor();
+    let default = crate::track::geom::bd09_to_wgs84(anchor.latitude, anchor.longitude);
+    (coordinate.0 - default.0).abs() <= 1e-6 && (coordinate.1 - default.1).abs() <= 1e-6
 }
 
 // A point on a shared boundary has no unique city. Ask for manual confirmation.
@@ -190,6 +196,15 @@ fn lookup(coordinate: (f64, f64)) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn untouched_default_anchor_does_not_trigger_city_lookup_after_conversion() {
+        let identity = crate::crypto::header::HeaderIdentity::default();
+        let mut lookup = CityLookup::default();
+        let mut city = identity.city.clone();
+        lookup.poll(super::super::coordinates::anchor_wgs84(&identity), &mut city);
+        assert!(!lookup.busy());
+        assert_eq!(city, identity.city);
+    }
     #[test]
     fn city_boundary_vertices_holes_and_unknown_regions_require_confirmation() {
         let data = serde_json::json!({"features":[{"properties":{"level":"city","name":"测试城市"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[4,0],[4,4],[0,4],[0,0]],[[1,1],[2,1],[2,2],[1,2],[1,1]]]}}]});

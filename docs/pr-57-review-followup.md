@@ -1,5 +1,20 @@
 # PR #57 审核补充
 
+## 所有者审查补充（2026-10-21）
+
+对应所有者 [2026-10-19 的审查](https://github.com/YanamiNeko/NekoSportsWorldTool/pull/57#issuecomment-6258137331)：
+
+- **坐标系**：保存锚点保持 BD-09。系统定位/地图选点写入时使用 WGS84 → BD-09；打开地图、显示选点、城市匹配、路网默认中心和“使用已保存锚点”走 BD-09 → WGS84。后者必须用反向转换，不能重复正向转换。手填字段明确标注 BD-09，未改存储格式。回归覆盖转换、序列化恢复及默认锚点不触发城市识别；测试采用合成点，不附带个人定位数据。
+- **旧数据**：旧版本可能保存过未经转换的点，但没有来源/坐标系标记；不自动猜测迁移。README 提示受影响用户重新定位或选点后保存。
+- **磁盘缓存**：瓦片（包含卫星图）128 MiB、路网 64 MiB，按最早写入淘汰，写入配额包含临时文件与元数据；首次使用时清理旧超额缓存。并发写入共用锁；测试覆盖旧缓存、跨提供商目录、元数据、超额对象及并发写入。
+- **缓存期限**：遵守 max-age、Age、no-cache/no-store；没有明确策略时才默认 7 天。使用新瓦片缓存命名空间，避免继续信任旧版本被延长的 TTL；旧文件仍计入总量并参与淘汰。
+- **版本与 CI**：撤销 fork 的版本号变更，Cargo 保持上游 0.3.0，Android 元数据恢复上游值；不修改已有 Release/tag。移除特性分支 push 触发，PR 仅在相关源码、资源、平台打包或对应 workflow 变更时构建。
+- **服务声明**：瓦片与两个 Overpass 入口统一 User-Agent 联系地址为上游项目；README 补充 OSM、DataV、Esri 来源、使用政策与第三方许可边界。
+
+本次 Windows `cargo test --all --locked`：主库 109 项、路网单元 5 项、集成 7 项通过，6 项 smoke 保持 ignored；CLI `cargo check --locked --no-default-features` 通过（存在未使用代码警告）。这不代表各平台真实定位或第三方在线服务已重新验收。
+
+## 前次第三方审核核对
+
 对应 [9ac21e4 的 PR_REVIEW_SUMMARY.md](https://github.com/DemaciaForge/NekoSportsWorldTool/blob/9ac21e4cddb2a3b71ee7dad17bc58e47af430b4e/PR_REVIEW_SUMMARY.md)。以下按当前源码核对，不将第三方报告当作已完成的验证。
 
 | 审核事项 | 当前证据及处理 |

@@ -14,9 +14,19 @@ name: Release
 
 on:
   push:
-    branches: [feat/map-location-picker]
     tags: ["v*"]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "src/**"
+      - "crates/**"
+      - "vendor/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "assets/**"
+      - ".github/workflows/release.yml"
+      - "linux/**"
+      - "macos/**"
   workflow_dispatch:
     inputs:
       mode:

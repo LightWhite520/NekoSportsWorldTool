@@ -490,9 +490,23 @@ impl LocationPicker {
     }
 }
 
+fn tile_ttl(cache_control: Option<&str>, age: Option<&str>) -> u64 {
+    let control = cache_control.unwrap_or("").to_ascii_lowercase();
+    let fields: Vec<_> = control.split(',').map(str::trim).collect();
+    if fields.iter().any(|field| matches!(field.split('=').next(), Some("no-store" | "no-cache"))) {
+        return 0;
+    }
+    let ttl = fields.iter().find_map(|field| field.strip_prefix("max-age=")
+        .map(|value| value.trim_matches('"').parse::<u64>().unwrap_or(0)))
+        .unwrap_or(604800);
+    ttl.saturating_sub(age.and_then(|value| value.parse().ok()).unwrap_or(0))
+}
+
 fn fetch_tile(agent: &ureq::Agent, tile: Tile) -> Result<egui::ColorImage, String> {
     use std::io::Read;
-    let cache = crate::platform::data_dir().join("map_tiles");
+    let root = crate::platform::data_dir().join("map_tiles");
+    let cache_ready = super::disk_cache::prepare(&root, super::disk_cache::TILE_LIMIT).is_ok();
+    let cache = root.join("v2");
     let cache = if tile.provider == Provider::Satellite {
         cache.join("esri")
     } else {
@@ -503,9 +517,8 @@ fn fetch_tile(agent: &ureq::Agent, tile: Tile) -> Result<egui::ColorImage, Strin
     let ttl = std::fs::read_to_string(&lifetime)
         .ok()
         .and_then(|text| text.parse::<u64>().ok())
-        .unwrap_or(604800)
-        .max(604800);
-    if std::fs::metadata(&path).ok().is_some_and(|metadata| {
+        .unwrap_or(0);
+    if cache_ready && std::fs::metadata(&path).ok().is_some_and(|metadata| {
         metadata.len() <= 1_048_576
             && metadata
                 .modified()
@@ -525,28 +538,10 @@ fn fetch_tile(agent: &ureq::Agent, tile: Tile) -> Result<egui::ColorImage, Strin
     };
     let response = agent
         .get(&url)
-        .set(
-            "User-Agent",
-            concat!(
-                "NekoSportsWorldTool/",
-                env!("CARGO_PKG_VERSION"),
-                " (+https://github.com/LightWhite520/NekoSportsWorldTool)"
-            ),
-        )
+        .set("User-Agent", super::MAP_USER_AGENT)
         .call()
         .map_err(|error| error.to_string())?;
-    let ttl = response
-        .header("Cache-Control")
-        .unwrap_or("")
-        .split(',')
-        .find_map(|field| {
-            field
-                .trim()
-                .strip_prefix("max-age=")
-                .and_then(|age| age.parse::<u64>().ok())
-        })
-        .unwrap_or(604800)
-        .max(604800);
+    let ttl = tile_ttl(response.header("Cache-Control"), response.header("Age"));
     let mut bytes = Vec::new();
     response
         .into_reader()
@@ -557,17 +552,11 @@ fn fetch_tile(agent: &ureq::Agent, tile: Tile) -> Result<egui::ColorImage, Strin
         return Err("地图图片过大".into());
     }
     let image = decode_tile(&bytes)?;
-    // Best-effort persistent caching avoids re-downloading tiles on every reopening.
-    if std::fs::create_dir_all(&cache).is_ok() {
-        let temporary = cache.join(format!("{}.tmp", uuid::Uuid::new_v4()));
-        if std::fs::write(&temporary, &bytes).is_ok() {
-            // Windows rename cannot overwrite an existing expired cache entry.
-            let _ = std::fs::remove_file(&path);
-            if std::fs::rename(&temporary, &path).is_ok() {
-                let _ = std::fs::write(lifetime, ttl.to_string());
-            }
-            let _ = std::fs::remove_file(&temporary);
-        }
+    // Keep image usable even when disk caching fails. Zero TTL never persists a response.
+    if cache_ready && ttl > 0 {
+        let ttl_text = ttl.to_string();
+        let _ = super::disk_cache::store(&root, super::disk_cache::TILE_LIMIT,
+            &[(&path, &bytes), (&lifetime, ttl_text.as_bytes())]);
     }
     Ok(image)
 }
@@ -599,6 +588,17 @@ fn decode_tile(bytes: &[u8]) -> Result<egui::ColorImage, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_cache_directives_are_not_extended_to_seven_days() {
+        assert_eq!(tile_ttl(Some("public, max-age=60"), Some("20")), 40);
+        assert_eq!(tile_ttl(Some("max-age=0"), None), 0);
+        assert_eq!(tile_ttl(Some("max-age=60"), Some("120")), 0);
+        assert_eq!(tile_ttl(Some("no-store, max-age=600"), None), 0);
+        assert_eq!(tile_ttl(Some("no-cache"), None), 0);
+        assert_eq!(tile_ttl(Some("max-age=invalid"), None), 0);
+        assert_eq!(tile_ttl(None, None), 604800);
+    }
 
     #[test]
     fn click_selects_but_drag_only_pans_on_phone_and_desktop() {
@@ -704,7 +704,7 @@ mod tests {
             .timeout(Duration::from_secs(15))
             .build();
         assert_eq!(fetch_tile(&agent, tile).unwrap().size, [256, 256]);
-        assert!(directory.join("map_tiles/0-0-0.png").exists());
+        assert!(directory.join("map_tiles/v2/0-0-0.png").exists());
         let offline = ureq::AgentBuilder::new()
             .proxy(ureq::Proxy::new("http://127.0.0.1:1").unwrap())
             .timeout(Duration::from_secs(1))

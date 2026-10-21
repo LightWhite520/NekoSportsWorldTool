@@ -34,9 +34,19 @@ name: APK
 
 on:
   push:
-    branches: [main, feat/map-location-picker]
+    branches: [main]
     tags: ["v*"]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "src/**"
+      - "crates/**"
+      - "vendor/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "assets/**"
+      - ".github/workflows/apk.yml"
+      - "android/**"
   workflow_dispatch:
 
 permissions:
