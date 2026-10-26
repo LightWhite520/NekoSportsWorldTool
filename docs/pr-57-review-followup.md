@@ -46,3 +46,5 @@
 - #63 基于较早主线，修改了同一 UI 与消息处理文件，仍需在它重放到最新 main 时解决冲突；上述接口约定不等于三方整合已通过编译。
 
 本次拆分后 Windows `cargo test --all --locked`：主库 206、route-planner 单元 8、集成 7 通过；6 个显式 smoke 忽略。未执行三方 UI 整合或平台实机验收。
+
+凭据归档独立 PR：[#129](https://github.com/YanamiNeko/NekoSportsWorldTool/pull/129)。本次 Android ARM64 debug APK 已本地构建并通过 v2/v3 签名校验，未重新执行实机定位权限流程。与 #66 当前 head 的 Git 试合并无冲突，尚未验收其算法行为。
