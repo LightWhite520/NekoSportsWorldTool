@@ -212,3 +212,29 @@ pub extern "system" fn Java_org_nekosportsworld_tool_MainActivity_nativeSubmitEd
     EDITS.get_or_init(Default::default).lock().unwrap().insert(id as u64, value);
     if let Some(context) = CONTEXT.lock().unwrap().as_ref() { context.request_repaint(); }
 }
+
+static LOGIN_ARCHIVE_REPLY: Mutex<Option<Result<Option<Vec<u8>>, String>>> = Mutex::new(None);
+pub(crate) fn take_login_archive() -> Option<Result<Option<Vec<u8>>, String>> {
+    LOGIN_ARCHIVE_REPLY.lock().unwrap().take()
+}
+pub(crate) fn login_archive_picker(bytes: Option<&[u8]>) -> bool {
+    with_activity(|env, activity| {
+        let data = env.byte_array_from_slice(bytes.unwrap_or_default())?;
+        env.call_method(activity, "loginArchivePicker", "(Z[B)V", &[
+            JValue::Bool(bytes.is_some().into()), JValue::Object(data.as_ref()),
+        ])?;
+        Ok(())
+    })
+}
+#[no_mangle]
+pub extern "system" fn Java_org_nekosportsworld_tool_MainActivity_nativeLoginArchive(
+    mut env: JNIEnv<'_>, _activity: JObject<'_>, importing: jni::sys::jboolean,
+    data: jni::objects::JByteArray<'_>, error: JString<'_>,
+) {
+    let error: String = env.get_string(&error).map(|v| v.into()).unwrap_or_else(|_| "读取文件结果失败".into());
+    let result = if !error.is_empty() { Err(error) } else if importing != 0 {
+        env.convert_byte_array(data).map(Some).map_err(|_| "读取 ZIP 失败".into())
+    } else { Ok(None) };
+    *LOGIN_ARCHIVE_REPLY.lock().unwrap() = Some(result);
+    if let Some(context) = CONTEXT.lock().unwrap().as_ref() { context.request_repaint(); }
+}
