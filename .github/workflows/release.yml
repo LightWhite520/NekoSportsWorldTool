@@ -2,7 +2,8 @@
 #
 # 触发方式：
 #   ① 推送 tag：  git tag v0.2.0 && git push origin v0.2.0
-#   ② 手动：     Actions 页面 Run workflow（可选 full/cli 模式，仅出构建产物，不发布）
+#   ② 手动：     Actions 页面 Run workflow（可选 full/cli 模式，仅出构建产物）
+#   ③ 发布草稿：手动填写 publish_draft_tag，校验已有附件后发布，不重复构建
 #
 # 注意：本文件需位于仓库根 .github/workflows/ 下
 #（若仓库根就是 gui-rs 目录内容则无需调整；否则把 .github 移到仓库根）。
@@ -27,12 +28,17 @@ on:
         type: choice
         default: macos-latest
         options: [macos-latest, macos-15]
+      publish_draft_tag:
+        description: 仅发布已有草稿的标签（留空则构建；需含五个平台包、对比图及校验文件）
+        type: string
+        default: ''
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: ${{ inputs.publish_draft_tag == '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -112,3 +118,95 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+
+  publish-draft:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_draft_tag != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: publish-draft-${{ inputs.publish_draft_tag }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.publish_draft_tag }}
+    steps:
+      - name: 校验草稿附件并发布
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          tag = os.environ['RELEASE_TAG']
+          fields = 'isDraft,isPrerelease,tagName,targetCommitish,assets,body,url'
+
+          def gh(*args):
+              return subprocess.check_output(['gh', *args], text=True)
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          def view():
+              return json.loads(gh('release', 'view', tag, '--json', fields))
+
+          def snapshot(value):
+              metadata = {key: value[key] for key in (
+                  'isDraft', 'isPrerelease', 'tagName', 'targetCommitish', 'body')}
+              metadata['assets'] = sorted(
+                  (a['id'], a['name'], a['size'], a['digest'], a['state'])
+                  for a in value['assets'])
+              return metadata
+
+          release = view()
+          require(release['isDraft'], '该 Release 不是草稿，停止操作。')
+          require(re.fullmatch(r'[0-9a-f]{40}', release['targetCommitish']),
+                  '草稿必须绑定完整构建提交 SHA，不能使用可移动的分支名。')
+          expected = {
+              'NekoSportsWorldTool-win-x64.zip',
+              'NekoSportsWorldTool-macos-arm64.tar.gz',
+              'NekoSportsWorldTool-linux-x64.tar.gz',
+              'NekoSportsWorldTool-linux-aarch64.tar.gz',
+              'NekoSportsWorldTool-android-arm64.apk',
+              'motion-comparison.png',
+          }
+          assets = {asset['name']: asset for asset in release['assets']}
+          require(len(assets) == len(release['assets'])
+                  and set(assets) == expected | {'SHA256SUMS.txt'},
+                  '草稿附件不完整或包含额外文件。')
+          require(all(a['state'] == 'uploaded' and a['size'] > 0 for a in assets.values()),
+                  '存在未完成上传或空附件。')
+
+          output = Path('release-assets')
+          gh('release', 'download', tag, '--dir', str(output))
+          checksums = {}
+          for line in (output / 'SHA256SUMS.txt').read_text().splitlines():
+              match = re.fullmatch(r'([0-9a-f]{64})  (.+)', line)
+              require(match is not None, '校验文件格式错误。')
+              digest, name = match.groups()
+              require(name in expected and name not in checksums, '校验文件含未知或重复附件。')
+              checksums[name] = digest
+          require(set(checksums) == expected, '校验文件缺少附件。')
+          for name, asset in assets.items():
+              data = (output / name).read_bytes()
+              digest = hashlib.sha256(data).hexdigest()
+              require(len(data) == asset['size'] and asset['digest'] == 'sha256:' + digest,
+                      f'GitHub 附件摘要不一致：{name}')
+              require(name not in checksums or checksums[name] == digest,
+                      f'SHA256SUMS 校验失败：{name}')
+              print(f'校验通过：{name} ({len(data)} bytes)')
+
+          require(snapshot(view()) == snapshot(release), '校验期间草稿发生变化，停止发布。')
+          gh('release', 'edit', tag, '--draft=false')
+          published = view()
+          require(not published['isDraft']
+                  and published['isPrerelease'] == release['isPrerelease']
+                  and published['targetCommitish'] == release['targetCommitish']
+                  and published['body'] == release['body'], '发布后状态与草稿不一致。')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f"已校验并发布七个附件：[下载 Release]({published['url']})\n")
+          print(published['url'])
