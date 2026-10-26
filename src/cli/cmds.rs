@@ -12,6 +12,7 @@ pub fn dispatch(args: Vec<String>) -> i32 {
         "login" => cmd_login(&rest),
         "logout" => cmd_logout(),
         "run" => cmd_run(&rest),
+        "motion-check" => super::motion_check::run(&rest),
         "template" => cmd_template(&rest),
         "ai" => cmd_ai(&rest),
         "ai-list" => cmd_ai_list(),
@@ -127,6 +128,25 @@ fn cmd_run(rest: &[&str]) -> i32 {
         get(&flags, "route").unwrap_or(&cfg.route_mode),
     );
 
+    let track_selection = match get(&flags, "track") {
+        Some("off") => None,
+        Some(id) => match cfg
+            .track_selection
+            .clone()
+            .filter(|s| s.candidate.id == id && s.confirmed)
+        {
+            Some(s) => Some(s),
+            None => {
+                eprintln!("指定跑道未保存或未确认，请先在地图中确认");
+                return 1;
+            }
+        },
+        None if cfg.track_enabled => {
+            eprintln!("已启用跑道，请使用 --track <已确认 ID> 或 --track off");
+            return 1;
+        }
+        None => None,
+    };
     let dist = if dist_km > 0.0 {
         dist_km as f64 * 1000.0
     } else {
@@ -169,6 +189,7 @@ fn cmd_run(rest: &[&str]) -> i32 {
 
     let mut log = logger();
     let params = crate::api::flow::RunParams {
+        track_selection,
         dist,
         dur,
         start_ms,
@@ -472,14 +493,20 @@ fn cmd_obs_sample(rest: &[&str]) -> i32 {
     };
     let pts_bd = crate::api::points::points_bd(&pts);
     let start_ms = crate::crypto::envelope::now_ms() - dur * 1000;
-    let track = crate::track::generator::build(
+    let track = match crate::track::generator::build(
         dist,
         dur,
         seed,
         (anchor.latitude, anchor.longitude),
         start_ms,
         &pts_bd,
-    );
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
     let sess = client.login.clone().unwrap_or_default();
     let uuid = uuid::Uuid::new_v4().to_string().to_uppercase();
     let obj = crate::track::wire::build_obs_object(
@@ -645,10 +672,15 @@ fn cmd_cheat(rest: &[&str]) -> i32 {
     match crate::api::cheat::query(&mut client, page, &mut log) {
         Ok(r) => {
             println!("自查：{}", r.label());
-            println!("检查时间：{}", crate::track::geom::fmt_cst(r.checked_at_ms, "%Y-%m-%d %H:%M:%S 北京时间"));
+            println!(
+                "检查时间：{}",
+                crate::track::geom::fmt_cst(r.checked_at_ms, "%Y-%m-%d %H:%M:%S 北京时间")
+            );
             if r.status() == crate::api::cheat::Status::Flagged {
                 println!("服务端原因：{}；发生时间：{}", r.reason(), r.occurred_at());
-                if let Some(id) = r.record_id() { println!("关联跑步记录：{id}"); }
+                if let Some(id) = r.record_id() {
+                    println!("关联跑步记录：{id}");
+                }
             }
             println!("本页通报 {} 条（非全校总数）", r.list.len());
             for item in r.list.iter().take(20) {

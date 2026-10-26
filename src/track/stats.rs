@@ -83,7 +83,8 @@ mod tests {
                 (39.9, 116.4),
                 0,
                 &[(39.9, 116.4), (39.901, 116.401)],
-            );
+            )
+            .unwrap();
             let mut a = t.locations[0].clone();
             a.totalTime = 0;
             a.totalDis = 0.0;

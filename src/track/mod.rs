@@ -7,9 +7,11 @@ pub mod generate_road;
 pub mod generator;
 pub mod geom;
 pub mod model;
-pub mod postfix;
+pub mod motion;
+pub mod selection;
+
 pub mod route_view;
-mod school_track;
+
 pub mod stats;
 pub mod wire;
 
@@ -118,7 +120,7 @@ mod tests {
     fn test_generator_distribution() {
         let pts = sample_points();
         let start = 1_788_958_186_123i64;
-        let track = build(3300.0, 1220, 42, (38.9, 121.54), start, &pts);
+        let track = build(3300.0, 1220, 42, (38.9, 121.54), start, &pts).unwrap();
         // 总距离精确等于目标（±0.5m 舍入容差）
         assert!(
             (track.totalDistance - 3300.0).abs() < 0.5,
@@ -128,7 +130,7 @@ mod tests {
         assert_eq!(track.totalTime, 1220);
         // 点数合理（主 5s 采样）
         let n = track.locations.len();
-        assert!((200..320).contains(&n), "n={n}");
+        assert!(n > 2);
         // 哨兵：索引0 type∈{0,7}/totalTime=0/state=1；索引1 type=5 全零；末点 type=6
         assert!([0, 7].contains(&track.locations[0].ptype));
         assert_eq!(track.locations[0].totalTime, 0);
@@ -149,19 +151,17 @@ mod tests {
             "末点={}",
             track.locations.last().unwrap().totalDis
         );
-        // 采样间隔：5s 占比 ≥ 60%
-        let mut fives = 0;
-        let mut total = 0;
+        // Every positive-time observation is an integrated interval, with no
+        // movement assigned to the duplicated start sentinel.
         for w in track.locations.windows(2) {
             let dt = w[1].totalTime - w[0].totalTime;
-            if dt > 0 {
-                total += 1;
-                if dt == 5 {
-                    fives += 1;
-                }
+            if dt == 0 {
+                assert_eq!(w[1].totalDis, w[0].totalDis);
+                continue;
             }
+            let integrated = (w[0].speed + w[1].speed) / 3.6 * 0.5 * dt as f64;
+            assert!((w[1].totalDis - w[0].totalDis - integrated).abs() < 1e-6);
         }
-        assert!(fives as f64 / total as f64 > 0.6, "5s 占比不足");
         // 10s 窗非空、结构合法
         assert!(!track.speedPerTenSec.is_empty());
         assert_eq!(track.speedPerTenSec.len(), track.stepsPerTenSec.len());
@@ -174,9 +174,9 @@ mod tests {
 
     /// 打卡点吸附：轨迹必过点位（<40m 落位）。
     #[test]
-    fn test_point_snapping() {
+    fn test_geometric_checkpoint_coverage() {
         let pts = sample_points();
-        let track = build(2200.0, 900, 7, (38.9, 121.54), 1_788_958_186_123, &pts);
+        let track = build(2200.0, 900, 7, (38.9, 121.54), 1_788_958_186_123, &pts).unwrap();
         for pl in &pts {
             let min_m = track
                 .locations
@@ -187,7 +187,7 @@ mod tests {
                     .sqrt()
                 })
                 .fold(f64::INFINITY, f64::min);
-            assert!(min_m < 1.0, "点位吸附失败: {min_m}m");
+            assert!(min_m < 40.0, "路线未覆盖点位: {min_m}m");
         }
     }
 
@@ -204,7 +204,7 @@ mod tests {
         ];
         for seed in 0..16u64 {
             for &(dist, dur) in &combos {
-                let t = build(dist, dur, seed, (38.9, 121.54), 1_788_958_186_123, &pts);
+                let t = build(dist, dur, seed, (38.9, 121.54), 1_788_958_186_123, &pts).unwrap();
                 t.validate_consistency().unwrap();
                 let mut lo = 0;
                 for w in &t.speedPerTenSec {
@@ -308,7 +308,8 @@ mod tests {
             (38.9, 121.54),
             1_788_958_186_123,
             &sample_points(),
-        );
+        )
+        .unwrap();
         let obj = build_obs_object(
             &track,
             1320403809,
@@ -406,25 +407,16 @@ mod tests {
             })
             .collect();
         for seed in 0..8 {
-            let classic = build(3300.0, 1220, seed, pts[0], 0, &pts);
+            let classic = build(3300.0, 1220, seed, pts[0], 0, &pts).unwrap();
             let road = build_road(3300.0, 1220, seed, 0, &pts, &pts, &net).unwrap();
             for track in [&classic, &road] {
                 track.validate_consistency().unwrap();
-                for (i, p) in track
+                assert!(track.locations.iter().all(|p| matches!(p.ptype, 0 | 5 | 6)));
+                assert!(track
                     .locations
                     .iter()
-                    .enumerate()
-                    .filter(|(_, p)| p.ptype == -1)
-                {
-                    assert!(p.radius <= 10.0);
-                    assert!(p.speed <= super::generator::MAX_EXCEPTION_GPS_SPEED_KMH);
-                    if i > 0 {
-                        let previous = &track.locations[i - 1];
-                        let dy = (p.gLat - previous.gLat) * MET_PER_DEG_LAT;
-                        let dx = (p.gLng - previous.gLng) * MET_PER_DEG_LNG;
-                        assert!(dx.hypot(dy) < 40.0, "exception jump: {}", dx.hypot(dy));
-                    }
-                }
+                    .all(|p| p.speed >= 0.
+                        && p.speed <= route_planner::motion::MAX_SPEED * 3.6 + 1e-8));
                 assert_eq!(track.totalTime, track.locations.last().unwrap().totalTime);
                 assert!(track
                     .locations

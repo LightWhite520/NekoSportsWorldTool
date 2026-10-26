@@ -25,12 +25,25 @@ pub fn laps(route: &Route, target: f64) -> Vec<f64> {
     cuts.push(target);
     cuts.windows(2).map(|w| w[1] - w[0]).collect()
 }
+#[cfg(test)]
 pub fn position(points: &[(f64, f64)], arcs: &[f64], distance: f64) -> Option<(f64, f64)> {
+    position_with_end(points, arcs, distance, false)
+}
+pub fn position_with_end(
+    points: &[(f64, f64)],
+    arcs: &[f64],
+    distance: f64,
+    finite: bool,
+) -> Option<(f64, f64)> {
     let total = *arcs.last()?;
     if total <= 0. || points.len() != arcs.len() {
         return None;
     }
-    let s = distance.rem_euclid(total);
+    let s = if finite {
+        distance.clamp(0., total)
+    } else {
+        distance.rem_euclid(total)
+    };
     let i = arcs.partition_point(|a| *a < s).max(1).min(arcs.len() - 1);
     let f = (s - arcs[i - 1]) / (arcs[i] - arcs[i - 1]).max(1e-12);
     Some((

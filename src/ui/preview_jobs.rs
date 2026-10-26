@@ -41,8 +41,14 @@ impl App {
         plan: &RunPlan,
     ) {
         let key = format!(
-            "{}:{}:{}:{}:{}",
-            self.osm_page.request_id, inputs.loaded_ms, plan.dist, plan.dur, plan.seed
+            "{}:{}:{}:{}:{}:{}:{:?}",
+            self.osm_page.request_id,
+            inputs.loaded_ms,
+            plan.dist,
+            plan.dur,
+            plan.seed,
+            self.config.track_enabled,
+            self.config.track_selection
         );
         if key != self.run_page.preview_key {
             self.run_page.preview_cancel.cancel();
@@ -81,6 +87,8 @@ impl App {
         {
             self.run_page.preview_cancel = Arc::new(crate::task_control::Control::default());
             let cancel = self.run_page.preview_cancel.clone();
+            let track_enabled = self.config.track_enabled;
+            let track_selection = self.config.track_selection.clone();
             let inputs = inputs.clone();
             let plan = plan.clone();
             let tx = self.preview_tx.clone();
@@ -107,14 +115,31 @@ impl App {
                 let result = cancel
                     .check()
                     .and_then(|_| {
-                        crate::track::generate_road::plan_road_view(
-                            &net,
-                            &inputs.points,
-                            plan.dist * 1000.,
-                            plan.dur,
-                            plan.seed,
-                            &inputs.fences,
-                        )
+                        if track_enabled {
+                            let candidate =
+                                track_selection
+                                    .as_ref()
+                                    .ok_or("请先选择并确认跑道")?
+                                    .resolve(&net, &inputs.unid, &inputs.fences, &inputs.points)?;
+                            crate::track::generate_road::plan_track_view(
+                                &net,
+                                &inputs.points,
+                                plan.dist * 1000.,
+                                plan.dur,
+                                plan.seed,
+                                &inputs.fences,
+                                &candidate,
+                            )
+                        } else {
+                            crate::track::generate_road::plan_road_view(
+                                &net,
+                                &inputs.points,
+                                plan.dist * 1000.,
+                                plan.dur,
+                                plan.seed,
+                                &inputs.fences,
+                            )
+                        }
                     })
                     .and_then(|p| cancel.check().map(|_| p));
                 let _ = tx.send(PreviewResult {

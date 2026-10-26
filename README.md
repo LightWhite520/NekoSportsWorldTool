@@ -26,7 +26,8 @@
 
 - 完整实现 NetSecKit 信封加密与响应解密，每个响应强制 RSA 验签（fail-closed）
 - 人机验证全程本地完成，不依赖任何外部服务
-- 轨迹生成器：打卡点拟合环 + 自然速度曲线 + 哨兵点 / 断崖 / 点位吸附
+- 轨迹生成器：经典几何与真实路网共用连续运动模型，统一计算时间、位移、步数和分段统计
+- 跑道模式：OSM 候选识别、手动轮廓与确认；先经过必经点，再逆时针绕圈，无法连接时明确报错
 - 设备身份持久化（DeviceId / 安装时间 / MAC），稳定不易触发风控
 - GUI 与 CLI 共用同一套协议层，数据文件互通
 
@@ -40,6 +41,8 @@ NekoSportsWorldTool run                                  # 一键跑步（--alti
 NekoSportsWorldTool ai --sport 2 --score 26000           # AI 运动
 NekoSportsWorldTool rank main --type 1 --sort 1          # 排行榜
 NekoSportsWorldTool update [--check]           # 自动更新（--check 仅检查不下载）
+NekoSportsWorldTool motion-check                        # 离线运动一致性诊断，不读取账号配置
+NekoSportsWorldTool motion-check --map campus.osm        # 仅列出本地跑道候选
 NekoSportsWorldTool template --file run.gpx   # 本地分析真实记录海拔（不会上传）
 NekoSportsWorldTool help                                 # 全部命令
 ```
@@ -50,6 +53,10 @@ NekoSportsWorldTool help                                 # 全部命令
 手动海拔支持三种状态：留空使用自动海拔；填写单个数字（例如 `17.2`）让所有轨迹点使用固定海拔；填写区间（例如 `11.6-22.8`）将生成的海拔曲线映射到该上下限内，同时保留轨迹的相对起伏。
 
 青龙定时任务：首次手工 `login --remember` 一次，之后定时挂 `run` 即可。
+
+跑道功能默认关闭。在“真实道路路由”的预览中开启跑道模式，选择候选并核对轮廓和逆时针箭头，再确认当前校区。无标签候选需人工核对；手动轮廓需要与真实道路共享入口节点，不会跨越空白区域补连线。地图、点位或轮廓变化后需重新确认。CLI 使用 `run --route road --track <已确认ID>` 显式选择，或 `--track off` 关闭。
+
+实现约束、离线诊断和验证范围见 [MOTION_MODEL.md](MOTION_MODEL.md)。
 
 ## 常见问题
 

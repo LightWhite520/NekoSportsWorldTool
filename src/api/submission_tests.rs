@@ -153,7 +153,8 @@ fn params() -> SubmitParams {
         (39.9, 116.4),
         1_700_000_000_000,
         &[(39.9, 116.4), (39.901, 116.401), (39.902, 116.4)],
-    );
+    )
+    .unwrap();
     track.validate_consistency().unwrap();
     SubmitParams {
         five_point_json: json!({"fivePointJson":json!([{"lat":39.9,"lon":116.4,"glat":39.9,"glon":116.4}]).to_string()}).to_string(),

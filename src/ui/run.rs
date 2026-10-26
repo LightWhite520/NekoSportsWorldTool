@@ -89,6 +89,7 @@ pub struct RunPage {
     pub plan: Option<RunPlan>,
     /// 路线算法模式
     pub route_mode: RouteMode,
+    pub track_editor: super::track_editor::Editor,
     /// 地图视图状态
     pub map: MapState,
     /// 路网预览（真实道路路由）
@@ -529,6 +530,10 @@ impl App {
 
     fn draw_run_map(&mut self, ui: &mut egui::Ui) {
         if self.run_page.route_mode != RouteMode::Road {
+            if self.config.track_enabled {
+                self.config.track_enabled = false;
+                let _ = crate::api::model::save_config(&self.config);
+            }
             ui.label("经典模式仅按点位拟合，不包含建筑避让；需要沿道路行进时请选择真实道路模式。");
             return;
         }
@@ -607,6 +612,7 @@ impl App {
         if self.run_page.base_map_request.take().is_some() {
             self.run_page.map_fitted = false;
         }
+        self.draw_track_editor(ui, &net, &inputs);
         self.prepare_preview(ui, net.clone(), &inputs, &plan);
 
         if inputs.fences.is_empty() {
@@ -616,7 +622,12 @@ impl App {
             );
         }
 
-        if let Some(check) = &self.run_page.check {
+        if let Some(check) = self
+            .run_page
+            .check
+            .as_ref()
+            .filter(|_| !self.config.track_enabled)
+        {
             ui.label(format!(
                 "路线检查：{} 个道路连通分量；按当前顺序完整闭环最短距离 {}",
                 check.components,
@@ -630,11 +641,21 @@ impl App {
             }
         }
         if let Some(p) = &self.run_page.preview {
-            ui.label(format!(
-                "总距离 {:.2} km · 预计 {} 圈（返回起点计一圈，含末圈）",
-                plan.dist,
-                p.laps.len()
-            ));
+            if p.track_mode {
+                ui.label(format!(
+                    "连接段 {:.1} 米 · 跑道 {:.1} 米 · 逆时针 {} 圈（含末段）",
+                    p.prefix_m,
+                    p.circuit_m,
+                    p.laps.len()
+                ));
+            }
+            if !p.track_mode {
+                ui.label(format!(
+                    "总距离 {:.2} km · 预计 {} 圈（返回起点计一圈，含末圈）",
+                    plan.dist,
+                    p.laps.len()
+                ));
+            }
             ui.label(format!(
                 "点位顺序：{}",
                 (1..=p.checkpoints.len())
@@ -735,6 +756,19 @@ impl App {
             self.run_page
                 .map
                 .draw_polyline(&painter, canvas, &p.route, route_c, 2.5);
+            if p.track_mode {
+                let end = p
+                    .arcs
+                    .partition_point(|s| *s <= p.prefix_m)
+                    .min(p.route.len());
+                self.run_page.map.draw_polyline(
+                    &painter,
+                    canvas,
+                    &p.route[..end],
+                    egui::Color32::from_rgb(200, 120, 30),
+                    3.,
+                );
+            }
             let cp = egui::Color32::from_rgb(240, 180, 0);
             for &(la, lo) in &p.checkpoints {
                 self.run_page
@@ -761,10 +795,11 @@ impl App {
                     4.5,
                 );
             }
-            if let Some(pos) = crate::track::route_view::position(
+            if let Some(pos) = crate::track::route_view::position_with_end(
                 &p.route,
                 &p.arcs,
                 plan.dist * 1000. * self.run_page.progress as f64,
+                p.track_mode,
             ) {
                 self.run_page.map.draw_point(
                     &painter,
@@ -895,7 +930,9 @@ impl App {
     }
 
     fn start_run(&mut self) {
-        if self.run_busy { return; }
+        if self.run_busy {
+            return;
+        }
         if self.run_page.route_mode == RouteMode::Road && self.network.is_none() {
             self.status = "请先加载路网并刷新路线点位".into();
             return;
@@ -945,6 +982,19 @@ impl App {
                 return;
             }
         };
+        let track_selection = if self.config.track_enabled {
+            let Some(s) = self.config.track_selection.clone().filter(|s| s.confirmed) else {
+                self.status = "请先确认跑道".into();
+                return;
+            };
+            if route_mode != RouteMode::Road {
+                self.status = "跑道模式需要真实道路路由".into();
+                return;
+            }
+            Some(s)
+        } else {
+            None
+        };
         self.run_busy = true;
         self.run_control = std::sync::Arc::new(crate::task_control::Control::default());
         let control = self.run_control.clone();
@@ -954,6 +1004,7 @@ impl App {
             let mut log = App::logger(tx.clone());
             let mut client = tx.client(identity, Some(session));
             let params = crate::api::flow::RunParams {
+                track_selection,
                 dist,
                 dur,
                 start_ms,

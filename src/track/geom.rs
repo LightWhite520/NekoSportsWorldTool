@@ -27,37 +27,8 @@ impl Rng {
             inner: StdRng::seed_from_u64(seed),
         }
     }
-    pub fn random(&mut self) -> f64 {
-        rand::Rng::gen_range(&mut self.inner, 0.0..1.0)
-    }
-    pub fn uniform(&mut self, a: f64, b: f64) -> f64 {
-        rand::Rng::gen_range(&mut self.inner, a..=b)
-    }
-    pub fn randint(&mut self, a: i64, b: i64) -> i64 {
-        rand::Rng::gen_range(&mut self.inner, a..=b)
-    }
     pub fn gauss(&mut self, mu: f64, sigma: f64) -> f64 {
         Normal::new(mu, sigma).unwrap().sample(&mut self.inner)
-    }
-    pub fn choice<T>(&mut self, items: &[T]) -> T
-    where
-        T: Copy,
-    {
-        items[rand::Rng::gen_range(&mut self.inner, 0..items.len())]
-    }
-    pub fn weighted<T>(&mut self, items: &[(T, u32)]) -> T
-    where
-        T: Copy,
-    {
-        let total: u32 = items.iter().map(|(_, w)| *w).sum();
-        let mut u = self.uniform(0.0, total as f64);
-        for (item, w) in items {
-            u -= *w as f64;
-            if u < 0.0 {
-                return *item;
-            }
-        }
-        items[items.len() - 1].0
     }
 }
 
@@ -107,32 +78,6 @@ pub fn make_point_ring(bd_points: &[(f64, f64)]) -> PointRing {
         arcs.push(arcs[i - 1] + ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt());
     }
     (dense, arcs, (cx, cy))
-}
-
-/// 环线弧长 → 坐标（线性插值）。
-pub fn ring_point_at(dense: &[(f64, f64)], arcs: &[f64], s: f64) -> (f64, f64) {
-    let total = *arcs.last().unwrap_or(&1.0);
-    let s = s.rem_euclid(total);
-    let mut lo = 0usize;
-    let mut hi = arcs.len();
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if arcs[mid] < s {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    let i = lo.max(1);
-    let a = dense[(i - 1) % dense.len()];
-    let b = dense[i % dense.len()];
-    let seg = arcs[i] - arcs[i - 1];
-    let t = if seg > 0.0 {
-        (s - arcs[i - 1]) / seg
-    } else {
-        0.0
-    };
-    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
 }
 
 pub fn to_bd(x: f64, y: f64, c_lat: f64, c_lng: f64) -> (f64, f64) {

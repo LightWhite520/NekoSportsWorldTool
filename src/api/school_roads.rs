@@ -75,7 +75,7 @@ fn query_coordinates(points: &[(f64, f64)], margin: f64) -> Result<String, Strin
         north + margin,
         east + margin
     );
-    Ok(format!("[out:xml][timeout:25];(way[highway]({bbox});way[building]({bbox});relation[building]({bbox}););(._;>;);out body;"))
+    Ok(format!("[out:xml][timeout:25];(way[highway]({bbox});way[leisure=track]({bbox});way[sport~\"^(running|athletics)$\"]({bbox});way[building]({bbox});relation[building]({bbox}););(._;>;);out body;"))
 }
 
 fn parse(bytes: &[u8]) -> Result<RoadGraph, String> {
@@ -120,6 +120,8 @@ fn download(query: &str) -> Result<Vec<u8>, String> {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Cache {
+    #[serde(default)]
+    version: u32,
     key: String,
     loaded_ms: i64,
     xml: String,
@@ -172,7 +174,10 @@ fn cached_route_network(
     {
         if let Ok(text) = std::fs::read_to_string(&file) {
             if let Ok(cache) = serde_json::from_str::<Cache>(&text) {
-                if cache.key == key && (0..TTL_MS).contains(&(now - cache.loaded_ms)) {
+                if cache.version == 2
+                    && cache.key == key
+                    && (0..TTL_MS).contains(&(now - cache.loaded_ms))
+                {
                     if let Ok(net) = parse(cache.xml.as_bytes()) {
                         log("[road] 使用当前学校及下载范围对应的路网缓存");
                         return Ok(net);
@@ -195,6 +200,7 @@ fn cached_route_network(
         return Err("下载的路网在学校围栏内没有可用道路，不能向校外补足距离".into());
     }
     let cache = Cache {
+        version: 2,
         key,
         loaded_ms: now,
         xml: String::from_utf8(bytes).map_err(|e| e.to_string())?,

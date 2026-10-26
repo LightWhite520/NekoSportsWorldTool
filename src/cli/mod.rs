@@ -5,6 +5,7 @@
 //! 即可（会话失效且已记住凭据时自动重登）。
 
 mod cmds;
+mod motion_check;
 
 use crate::api::client::ApiClient;
 use crate::api::model::{self, Session};
@@ -21,8 +22,10 @@ fn usage() {
   login   --user <手机号> --pass <密码> [--remember]
                                            登录并保存会话；--remember 同时保存凭据供自动重登
   logout                                   登出并清理本地会话
-  run    [--dist km] [--pace 秒/km] [--altitude 米或min-max] [--ago 分钟] [--days-ago 0-3 --time HH:MM] [--face 0|1] [--seed n] [--route legacy|road]
+  run    [--dist km] [--pace 秒/km] [--altitude 米或min-max] [--ago 分钟] [--days-ago 0-3 --time HH:MM] [--face 0|1] [--seed n] [--route legacy|road] [--track ID|off]
                                            跑步全链：策略-点位-轨迹-提交-OBS-验证（--route 选择路线算法）
+  motion-check [--map file.osm] [--candidate ID] [--distance 米] [--duration 秒] [--seed n] [--timeline]
+                                           离线列出跑道候选或检查运动约束，不读取账号配置
   template --file <GPX/JSON>                本地读取真实记录，分析海拔（不会上传）
   ai-list                                  AI 运动项目列表
   ai     --sport <id> [--mode min|count] [--score n]

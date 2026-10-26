@@ -13,7 +13,7 @@ use crate::track::generator::build as gen_track;
 use crate::track::wire::{build_obs_object, five_point_wrapper, obs_keys};
 use serde_json::Value;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RunParams {
     /// 距离（米）与时长（秒）已由 UI 参数解析。
     pub dist: f64,
@@ -28,6 +28,7 @@ pub struct RunParams {
     pub seed: u64,
     /// 路线算法模式。
     pub route_mode: RouteMode,
+    pub track_selection: Option<crate::track::selection::TrackSelection>,
 }
 
 pub struct RunOutcome {
@@ -171,8 +172,7 @@ pub fn run_full_flow_cancellable(
         route_pts.len()
     ));
     // Keep the user's location stable so preview and submission refer to the same campus.
-    let mut params = *params;
-    params.dur = crate::track::generate_road::effective_duration(params.dist, params.dur);
+    let params = params.clone();
     control.check()?;
     log(&format!(
         "[track] 生成轨迹 {:.0}m / {}s（{} 点位）…",
@@ -182,6 +182,9 @@ pub fn run_full_flow_cancellable(
     ));
     // 随机 0-4 秒偏移（终端上报的 flag 与首点差 <5s），轨迹/提交/OBS/五点统一使用
     let start_ms = params.start_ms + (rand::random::<u32>() % 5) as i64 * 1000;
+    if params.track_selection.is_some() && params.route_mode != RouteMode::Road {
+        return Err("跑道模式需要真实路网".into());
+    }
     let mut track = match params.route_mode {
         RouteMode::Road => {
             if !fences.polygons.is_empty() {
@@ -197,23 +200,42 @@ pub fn run_full_flow_cancellable(
                 control,
                 log,
             )?;
+            let candidate = params
+                .track_selection
+                .as_ref()
+                .map(|s| s.resolve(&net, &sess.unid, &fences.polygons, &route_pts))
+                .transpose()?;
             crate::track::generate_road::align_network(&mut net);
             let filtered = crate::track::generate_road::apply_fences(&net, &fences.polygons);
-            log(if fences.polygons.is_empty() {
+            log(if candidate.is_some() {
+                "[road] 依次经过必经点，再进入已确认跑道逆时针完成剩余距离"
+            } else if fences.polygons.is_empty() {
                 "[road] 学校边界未提供；沿点位闭环重复补足距离，无法保证校内范围"
             } else {
                 "[road] 在学校围栏内沿点位闭环重复补足距离"
             });
-            crate::track::generate_road::build_road(
-                params.dist,
-                params.dur,
-                params.seed,
-                start_ms,
-                &route_pts,
-                &route_pts,
-                &filtered,
-            )
-            .map_err(|e| format!("道路路由失败：{e}；请修复路网或主动切换经典模式"))?
+            if let Some(candidate) = candidate {
+                crate::track::generate_road::build_track(
+                    &filtered,
+                    &route_pts,
+                    params.dist,
+                    params.dur,
+                    params.seed,
+                    start_ms,
+                    &candidate,
+                )?
+            } else {
+                crate::track::generate_road::build_road(
+                    params.dist,
+                    params.dur,
+                    params.seed,
+                    start_ms,
+                    &route_pts,
+                    &route_pts,
+                    &filtered,
+                )
+                .map_err(|e| format!("道路路由失败：{e}；请修复路网或主动切换经典模式"))?
+            }
         }
         RouteMode::Legacy => gen_track(
             params.dist,
@@ -222,7 +244,7 @@ pub fn run_full_flow_cancellable(
             (anchor.latitude, anchor.longitude),
             start_ms,
             &route_pts,
-        ),
+        )?,
     };
     control.check()?;
     if let Some(range) = params.manual_altitude_range {
@@ -353,13 +375,22 @@ pub fn run_records(
     let rows = super::records::fetch_records(client)?;
     if let Some(session) = &client.login {
         let reconciliation = (|| {
-            let mut guard = super::submission_guard::Guard::open(session.uid, session.unid.parse().map_err(|_| "学校编号无效")?)?;
+            let mut guard = super::submission_guard::Guard::open(
+                session.uid,
+                session.unid.parse().map_err(|_| "学校编号无效")?,
+            )?;
             let found = guard.reconcile(&rows)?;
-            for id in found { log(&format!("[record] 已核对先前提交的记录 #{id}；未重复提交")); }
-            if guard.has_pending() { log("[record] 上次提交结果仍未知；本次列表未找到匹配记录，重复提交保护继续生效"); }
+            for id in found {
+                log(&format!("[record] 已核对先前提交的记录 #{id}；未重复提交"));
+            }
+            if guard.has_pending() {
+                log("[record] 上次提交结果仍未知；本次列表未找到匹配记录，重复提交保护继续生效");
+            }
             Ok::<_, String>(())
         })();
-        if let Err(error) = reconciliation { log(&format!("[record] 提交保护核对未完成：{error}")); }
+        if let Err(error) = reconciliation {
+            log(&format!("[record] 提交保护核对未完成：{error}"));
+        }
     }
     log(&format!("√ [records] {} 条记录", rows.len()));
     Ok(rows)

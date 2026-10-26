@@ -23,6 +23,7 @@ pub mod records;
 mod road_tools;
 pub mod run;
 pub mod theme;
+mod track_editor;
 pub mod user;
 
 use crate::api::model::{self, Config, HeaderIdentity, Session};
