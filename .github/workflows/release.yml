@@ -22,6 +22,11 @@ on:
         type: choice
         default: full
         options: [full, cli]
+      macos_runner:
+        description: macOS 运行器（latest 长时间排队时可选 macos-15）
+        type: choice
+        default: macos-latest
+        options: [macos-latest, macos-15]
 
 permissions:
   contents: write
@@ -50,7 +55,7 @@ jobs:
             mode: cli
             artifact: NekoSportsWorldTool-linux-aarch64
             cross: true
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'macos-latest' && github.event.inputs.macos_runner || matrix.os }}
     env:
       # Keep CLI-only targets in CLI mode during a manual full build.
       MODE: ${{ matrix.mode == 'cli' && 'cli' || github.event.inputs.mode || matrix.mode }}
