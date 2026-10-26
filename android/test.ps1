@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][ValidatePattern('^emulator-[0-9]+$')][string]$Serial,
     [string]$SdkPath = (Join-Path $env:LOCALAPPDATA 'Android\Sdk'),
     [string]$TargetDir = '',
-    [ValidateSet('smoke', 'location', 'archive')][string]$Suite = 'smoke'
+    [ValidateSet('smoke', 'location')][string]$Suite = 'smoke'
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -23,10 +23,9 @@ function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'tests\SmokeInstrumentation.java') -Destination $output -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'tests\LocationInstrumentation.java') -Destination $output -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'tests\LoginArchiveInstrumentation.java') -Destination $output -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'tests\AndroidManifest.xml') -Destination $output -Force
 $bootClasspath = $androidJar + ';' + (Join-Path $tools 'core-lambda-stubs.jar')
-Invoke-Checked (Join-Path $javaBin 'javac.exe') @('-encoding','UTF-8','-source','8','-target','8','-Xlint:-options','-bootclasspath',$bootClasspath,'-classpath',$appClasses,'-d',(Join-Path $output 'classes'),(Join-Path $output 'SmokeInstrumentation.java'),(Join-Path $output 'LocationInstrumentation.java'),(Join-Path $output 'LoginArchiveInstrumentation.java'))
+Invoke-Checked (Join-Path $javaBin 'javac.exe') @('-encoding','UTF-8','-source','8','-target','8','-Xlint:-options','-bootclasspath',$bootClasspath,'-classpath',$appClasses,'-d',(Join-Path $output 'classes'),(Join-Path $output 'SmokeInstrumentation.java'),(Join-Path $output 'LocationInstrumentation.java'))
 Invoke-Checked (Join-Path $javaBin 'jar.exe') @('cf',(Join-Path $output 'tests.jar'),'-C',(Join-Path $output 'classes'),'.')
 Invoke-Checked (Join-Path $tools 'd8.bat') @('--lib',$androidJar,'--classpath',$appClasses,'--min-api','26','--output',(Join-Path $output 'dex'),(Join-Path $output 'tests.jar'))
 $unsigned = Join-Path $output 'unsigned.apk'
@@ -40,12 +39,6 @@ Invoke-Checked (Join-Path $tools 'apksigner.bat') @('sign','--ks',(Join-Path $PS
 Invoke-Checked $adb @('-s',$Serial,'install','-r',$testApk)
 Invoke-Checked $adb @('-s',$Serial,'shell','input','keyevent','224')
 Invoke-Checked $adb @('-s',$Serial,'shell','wm','dismiss-keyguard')
-if ($Suite -eq 'archive') {
-    $result = & $adb '-s' $Serial 'shell' 'am' 'instrument' '-w' 'org.nekosportsworld.tool.tests/org.nekosportsworld.tool.tests.LoginArchiveInstrumentation'
-    $result
-    if ($LASTEXITCODE -ne 0 -or ($result -join "`n") -notmatch 'PASS: [0-9]+ Android login archive checks') { throw 'Android login archive checks failed' }
-    return
-}
 if ($Suite -eq 'location') {
     $result = & $adb '-s' $Serial 'shell' 'am' 'instrument' '-w' 'org.nekosportsworld.tool.tests/org.nekosportsworld.tool.tests.LocationInstrumentation'
     $result

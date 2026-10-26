@@ -429,7 +429,9 @@ impl App {
         self.refresh_school_route(force);
     }
 
-    fn load_manual_roads<F>(&mut self, source: RoadSource, load: F)
+    /// Shared WGS84 loader for manual map sources. Keep rendering/GCJ-02 conversion
+    /// outside this boundary so tile and drawn-route views can reuse the result.
+    pub(crate) fn load_manual_roads<F>(&mut self, source: RoadSource, load: F)
     where
         F: FnOnce() -> Result<(Arc<RoadGraph>, RoadSource), String> + Send + 'static,
     {

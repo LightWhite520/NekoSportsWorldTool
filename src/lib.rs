@@ -1,7 +1,6 @@
 //! Shared desktop and Android application.
 
 mod api;
-mod login_archive;
 pub mod cli;
 mod crypto;
 mod diagnostics;

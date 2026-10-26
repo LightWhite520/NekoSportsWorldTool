@@ -39,7 +39,7 @@ fn query(center: Coordinate, radius: u32) -> Result<String, String> {
         "around:{radius},{:.7},{:.7}",
         center.latitude, center.longitude
     );
-    Ok(format!("[out:xml][timeout:45][maxsize:{MAX_BYTES}];(way[\"highway\"]({area});way[\"leisure\"=\"track\"]({area});way[\"building\"]({area});relation[\"building\"]({area}););(._;>;);out body;"))
+    Ok(format!("[out:xml][timeout:45][maxsize:{MAX_BYTES}];(way[\"highway\"]({area});way[\"leisure\"=\"track\"]({area});relation[\"leisure\"=\"track\"]({area});way[\"building\"]({area});relation[\"building\"]({area}););(._;>;);out body;"))
 }
 
 fn parse(bytes: &[u8]) -> Result<RoadGraph, String> {
