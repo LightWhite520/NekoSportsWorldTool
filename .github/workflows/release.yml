@@ -52,7 +52,8 @@ jobs:
             cross: true
     runs-on: ${{ matrix.os }}
     env:
-      MODE: ${{ github.event.inputs.mode || matrix.mode }}
+      # Keep CLI-only targets in CLI mode during a manual full build.
+      MODE: ${{ matrix.mode == 'cli' && 'cli' || github.event.inputs.mode || matrix.mode }}
       TARGET: ${{ matrix.target }}
       ARTIFACT: ${{ matrix.artifact }}
     steps:
@@ -72,15 +73,15 @@ jobs:
         if: env.MODE == 'cli'
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target "$TARGET" --no-default-features
+            cross build --locked --release --target "$TARGET" --no-default-features
           else
-            cargo build --release --target "$TARGET" --no-default-features
+            cargo build --locked --release --target "$TARGET" --no-default-features
           fi
         shell: bash
 
       - name: Build (full = GUI + CLI)
         if: env.MODE == 'full'
-        run: cargo build --release --target "$TARGET"
+        run: cargo build --locked --release --target "$TARGET"
         shell: bash
 
       - name: Package
