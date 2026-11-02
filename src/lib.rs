@@ -1,6 +1,8 @@
 //! Shared desktop and Android application.
 
 mod api;
+#[cfg(any(feature = "gui", test))]
+mod login_archive;
 pub mod cli;
 mod crypto;
 mod diagnostics;

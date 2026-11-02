@@ -5,6 +5,8 @@ use egui::{Event, PointerButton, Pos2, Rect, Vec2};
 mod route_refresh_tests;
 #[path = "violation_tests.rs"]
 mod violation_tests;
+#[path = "login_backup_tests.rs"]
+mod login_backup_tests;
 
 fn frame(
     app: &mut App,

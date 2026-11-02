@@ -15,6 +15,74 @@ import android.widget.FrameLayout;
 /** Android UI thread owns the real text editor; Rust owns application state. */
 public final class MainActivity extends NativeActivity {
     static { System.loadLibrary("nekosportsworldtool"); }
+    private static final int LOGIN_IMPORT = 7401, LOGIN_EXPORT = 7402;
+    private byte[] loginExport;
+    private native void nativeLoginArchive(boolean importing, byte[] data, String error);
+
+    public void loginArchivePicker(boolean exporting, byte[] data) {
+        runOnUiThread(() -> {
+            try {
+                loginExport = exporting ? data : null;
+                android.content.Intent intent = new android.content.Intent(exporting
+                    ? android.content.Intent.ACTION_CREATE_DOCUMENT : android.content.Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+                intent.setType(exporting ? "application/zip" : "*/*");
+                if (exporting) intent.putExtra(android.content.Intent.EXTRA_TITLE, "neko-login.zip");
+                startActivityForResult(intent, exporting ? LOGIN_EXPORT : LOGIN_IMPORT);
+            } catch (Exception e) {
+                loginExport = null;
+                nativeLoginArchive(false, new byte[0], "无法打开系统文件选择器");
+            }
+        });
+    }
+
+    @Override protected void onActivityResult(int request, int result, android.content.Intent intent) {
+        super.onActivityResult(request, result, intent);
+        if (request != LOGIN_IMPORT && request != LOGIN_EXPORT) return;
+        final byte[] exportBytes = loginExport;
+        loginExport = null;
+        if (result != RESULT_OK || intent == null || intent.getData() == null) {
+            nativeLoginArchive(false, new byte[0], "已取消");
+            return;
+        }
+        final android.net.Uri uri = intent.getData();
+        new Thread(() -> {
+            try {
+                if (request == LOGIN_EXPORT) {
+                    if (exportBytes == null) throw new java.io.IOException();
+                    try (java.io.OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+                        if (out == null) throw new java.io.IOException();
+                        out.write(exportBytes);
+                    }
+                    nativeLoginArchive(false, new byte[0], "");
+                } else {
+                    byte[] bytes;
+                    try (java.io.InputStream in = getContentResolver().openInputStream(uri);
+                         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+                        if (in == null) throw new java.io.IOException();
+                        byte[] buffer = new byte[8192];
+                        int count;
+                        while ((count = in.read(buffer)) != -1) {
+                            if (out.size() + count > 4 * 1024 * 1024) throw new java.io.IOException();
+                            out.write(buffer, 0, count);
+                        }
+                        bytes = out.toByteArray();
+                    }
+                    final byte[] imported = bytes;
+                    runOnUiThread(() -> new AlertDialog.Builder(this)
+                        .setTitle("导入登录信息")
+                        .setMessage("将替换当前账号、登录凭证和设备身份，其他设置保留。")
+                        .setPositiveButton("导入", (d, w) -> nativeLoginArchive(true, imported, ""))
+                        .setNegativeButton("取消", (d, w) -> nativeLoginArchive(false, new byte[0], "已取消"))
+                        .setOnCancelListener(d -> nativeLoginArchive(false, new byte[0], "已取消"))
+                        .show());
+                }
+            } catch (Exception e) {
+                nativeLoginArchive(false, new byte[0], "文件读写失败，请检查权限、空间及 ZIP 大小（最多 4 MB）后重试");
+            }
+        }, "login-archive").start();
+    }
+
     private AlertDialog editorDialog;
     private AlertDialog deviceInfoDialog;
     private boolean taskActive;
