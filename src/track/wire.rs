@@ -42,6 +42,9 @@ fn gz_str(v: &str) -> String {
 /// 28 键协议点集（gen 点 → OBS 点；gLat/gLng 由 BD 转 GCJ）。
 pub fn conv_point(p: &GenPoint, start_ms: i64) -> Value {
     let (glat, glng) = bd09_to_gcj02(p.gLat, p.gLng);
+    // GenPoint stores km/h; the 7.4.0 pace chart interprets wire speed as min/km.
+    // Keep zero as the existing stationary/sentinel value, never infinity.
+    let pace_min_km = if p.speed > 0.0 { 60.0 / p.speed } else { 0.0 };
     json!({
         "avgSpeed": round_to(p.avgSpeed, 4),
         "bdA": round_to(p.bdA, 2),
@@ -62,7 +65,7 @@ pub fn conv_point(p: &GenPoint, start_ms: i64) -> Value {
         "locationId": "",
         "queueNum": p.queueNum,
         "radius": round_to(p.radius, 2),
-        "speed": round_to(p.speed, 4),
+        "speed": round_to(pace_min_km, 4),
         "state": p.state,
         "steps": p.steps,
         "stepDistance": 0.0,
@@ -230,7 +233,7 @@ pub(crate) fn build_windows(track: &Track, rrid: i64) -> (Vec<Value>, Vec<Value>
 }
 
 /// 圈（每 1000m 一圈，末圈 isFullLap=false）。
-/// avgPace 按秒/公里写入，供客户端格式化为分:秒；avgStride 单位厘米。
+/// avgPace 按十进制分钟/公里写入（7.4.0 展示）；avgStride 单位厘米。
 fn build_laps(track: &Track, start_ms: i64) -> Vec<Value> {
     let mut laps = Vec::new();
     let locs = &track.locations;
@@ -261,7 +264,7 @@ fn build_laps(track: &Track, start_ms: i64) -> Vec<Value> {
         let lap_steps = steps - prev_steps;
         laps.push(json!({
                 "avgCadence": if lap_t > 0 { json!(round_to(lap_steps as f64 / (lap_t as f64 / 60.0), 2)) } else { Value::Null },
-                "avgPace": if lap_t > 0 { json!(round_to(lap_t as f64 / (lap_d / 1000.0), 2)) } else { Value::Null },
+                "avgPace": if lap_t > 0 { json!(round_to(lap_t as f64 / 60.0 / (lap_d / 1000.0), 4)) } else { Value::Null },
                 "avgStride": if lap_steps > 0 { json!(round_to(lap_d / lap_steps as f64 * 100.0, 2)) } else { Value::Null },
                 "cumulativeDuration": t_now,
                 "distance": round_to(lap_d, 4),
@@ -326,6 +329,15 @@ pub fn obs_keys(track: &Track, rrid: i64, uuid: &str) -> Vec<String> {
 #[cfg(test)]
 mod regression_tests {
     use super::*;
+    fn decode_json(value: &Value) -> Value {
+        use std::io::Read;
+        let bytes = crate::crypto::envelope::b64_decode(value.as_str().unwrap()).unwrap();
+        let mut decoded = String::new();
+        flate2::read::GzDecoder::new(&bytes[..])
+            .read_to_string(&mut decoded)
+            .unwrap();
+        serde_json::from_str(&decoded).unwrap()
+    }
     fn linear_track(distance: f64, seconds: i64, steps: i64) -> Track {
         let mut track = crate::track::generator::build(
             1200.0,
@@ -357,12 +369,12 @@ mod regression_tests {
         let track = linear_track(1000.0, 600, 1200);
         let laps = build_laps(&track, 0);
         assert_eq!(laps.len(), 1);
-        assert_eq!(laps[0]["avgPace"], 600.0);
+        assert_eq!(laps[0]["avgPace"], 10.0);
         assert_eq!(laps[0]["avgStride"], 83.33);
         assert_eq!(laps[0]["isFullLap"], true);
         let partial = build_laps(&linear_track(500.0, 300, 600), 0);
         assert_eq!(partial[0]["isFullLap"], false);
-        assert_eq!(partial[0]["avgPace"], 600.0);
+        assert_eq!(partial[0]["avgPace"], 10.0);
         assert!(build_laps(&linear_track(1000.0, 600, 0), 0)[0]["avgStride"].is_null());
         assert!(build_laps(&linear_track(0.0, 600, 0), 0).is_empty());
         let laps = build_laps(&linear_track(2500.0, 1500, 3000), 0);
@@ -396,23 +408,19 @@ mod regression_tests {
         );
     }
     #[test]
-    fn encoded_obs_lap_pace_uses_seconds_not_decimal_minutes() {
+    fn encoded_obs_lap_pace_uses_decimal_minutes() {
         for (distance, seconds, pace) in [
-            (1000.0, 408, 408.0),
-            (1000.0, 419, 419.0),
-            (500.0, 204, 408.0),
-            (10.0, 9, 900.0),
+            (1000.0, 402, 6.7),
+            (1000.0, 401, 6.6833),
+            (1000.0, 408, 6.8),
+            (1000.0, 419, 6.9833),
+            (500.0, 204, 6.8),
+            (10.0, 9, 15.0),
         ] {
             let track = linear_track(distance, seconds, 1200);
             let obs = build_obs_object(&track, 1, "fixture", 1, "{}");
-            let bytes =
-                crate::crypto::envelope::b64_decode(obs["laps_json"].as_str().unwrap()).unwrap();
-            let mut decoded = String::new();
-            use std::io::Read;
-            flate2::read::GzDecoder::new(&bytes[..])
-                .read_to_string(&mut decoded)
-                .unwrap();
-            let laps: Vec<Value> = serde_json::from_str(&decoded).unwrap();
+            let decoded = decode_json(&obs["laps_json"]);
+            let laps = decoded.as_array().unwrap();
             assert_eq!(laps.len(), 1);
             assert_eq!(laps[0]["avgPace"], pace);
             assert_eq!(laps[0]["duration"], seconds);
@@ -421,14 +429,52 @@ mod regression_tests {
         }
         // Crossing a kilometre boundary must not leak rounding into the total.
         let laps = build_laps(&linear_track(1010.0, 408, 1200), 0);
-        assert_eq!(laps[0]["avgPace"], 404.0);
-        assert_eq!(laps[1]["avgPace"], 400.0);
+        assert_eq!(laps[0]["avgPace"], 6.7333);
+        assert_eq!(laps[1]["avgPace"], 6.6667);
         assert_eq!(
             laps.iter()
                 .map(|l| l["duration"].as_i64().unwrap())
                 .sum::<i64>(),
             408
         );
+    }
+
+    #[test]
+    fn encoded_obs_chart_uses_pace_without_changing_physical_speed() {
+        let mut track = linear_track(1000.0, 402, 1200);
+        let template = track.locations[0].clone();
+        // Start, accelerate, cruise, decelerate, stop. The old km/h values
+        // made the first moving sample appear fastest at 2'20" instead of slow.
+        let speeds_kmh = [0.0, 2.34, 60.0 / 6.7, 3.6, 0.0];
+        track.locations = speeds_kmh
+            .iter()
+            .map(|&speed| {
+                let mut point = template.clone();
+                point.speed = speed;
+                point.bdS = speed / 3.6;
+                point
+            })
+            .collect();
+        let obs = build_obs_object(&track, 1, "fixture", 1, "{}");
+        let run = decode_json(&obs["run_data"]);
+        let points: Vec<Value> =
+            serde_json::from_str(run["allLocJson"].as_str().unwrap()).unwrap();
+        let paces: Vec<f64> = points
+            .iter()
+            .map(|p| p["speed"].as_f64().unwrap())
+            .collect();
+        assert_eq!(paces, vec![0.0, 25.641, 6.7, 16.6667, 0.0]);
+        let fastest = paces
+            .iter()
+            .copied()
+            .filter(|&p| p > 0.0)
+            .fold(f64::INFINITY, f64::min);
+        assert_eq!(fastest, 6.7);
+        for ((point, wire), expected_speed) in track.locations.iter().zip(&points).zip(speeds_kmh) {
+            assert_eq!(point.speed, expected_speed);
+            assert_eq!(wire["bdS"], round_to(expected_speed / 3.6, 4));
+            assert_eq!(wire["avgSpeed"], round_to(point.avgSpeed, 4));
+        }
     }
 
     #[test]
