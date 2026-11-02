@@ -215,7 +215,7 @@ impl App {
                     .session
                     .as_ref()
                     .is_some_and(model::Session::is_logged_in)
-                && self.run_page.route_mode == crate::track::generate_road::RouteMode::Road;
+                && self.run_page.route_mode.uses_network();
             self.osm_page.busy = res.pending;
             let expired = res.scope.is_some()
                 && (crate::api::client::is_session_expired(&res.warning)

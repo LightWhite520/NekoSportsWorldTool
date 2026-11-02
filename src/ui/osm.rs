@@ -423,8 +423,10 @@ impl App {
         self.config.osm_path.clear();
         self.config.road_cache_path.clear();
         self.osm_page.path.clear();
-        self.config.route_mode = "road".into();
-        self.run_page.route_mode = crate::track::generate_road::RouteMode::Road;
+        if !self.run_page.route_mode.uses_network() {
+            self.run_page.route_mode = crate::track::generate_road::RouteMode::Road;
+        }
+        self.config.route_mode = self.run_page.route_mode.as_str().into();
         let _ = crate::api::model::save_config(&self.config);
         self.refresh_school_route(force);
     }

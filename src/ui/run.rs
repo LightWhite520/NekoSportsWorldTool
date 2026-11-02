@@ -414,14 +414,18 @@ impl App {
                 ui.label("路线算法：");
                 ui.selectable_value(&mut page.route_mode, RouteMode::Legacy, "经典打卡点环");
                 ui.selectable_value(&mut page.route_mode, RouteMode::Road, "真实道路路由");
-                if page.route_mode == RouteMode::Road && self.network.is_none() {
+                ui.selectable_value(&mut page.route_mode, RouteMode::Track, "跑道路线（规整）");
+                if page.route_mode.uses_network() && self.network.is_none() {
                     ui.colored_label(theme::warn(), "（正在按学校获取，可到路网页查看）");
                 }
             });
+            if page.route_mode == RouteMode::Track {
+                ui.label("用于操场绕圈，请确认预览路线位于跑道内；预览包含实际生成的轨迹。");
+            }
         }
 
         // 切换到真实道路路由时按需拉取电子围栏与实时点位（经典模式不触发这些端点）。
-        if self.run_page.route_mode == RouteMode::Road && prev_route != RouteMode::Road {
+        if self.run_page.route_mode.uses_network() && !prev_route.uses_network() {
             self.refresh_points();
         }
 
@@ -528,7 +532,7 @@ impl App {
     }
 
     fn draw_run_map(&mut self, ui: &mut egui::Ui) {
-        if self.run_page.route_mode != RouteMode::Road {
+        if !self.run_page.route_mode.uses_network() {
             ui.label("经典模式仅按点位拟合，不包含建筑避让；需要沿道路行进时请选择真实道路模式。");
             return;
         }
@@ -761,7 +765,12 @@ impl App {
                     4.5,
                 );
             }
-            if let Some(pos) = crate::track::route_view::position(
+            let position = if self.run_page.route_mode == RouteMode::Track {
+                crate::track::route_view::trajectory_position
+            } else {
+                crate::track::route_view::position
+            };
+            if let Some(pos) = position(
                 &p.route,
                 &p.arcs,
                 plan.dist * 1000. * self.run_page.progress as f64,
@@ -775,7 +784,9 @@ impl App {
                     7.0,
                 );
             }
-            let label = if p.length_m > 0.0 {
+            let label = if self.run_page.route_mode == RouteMode::Track {
+                format!("本次方案 {:.2} km · {} 个轨迹点 · {} 打卡点", plan.dist, p.route.len(), p.checkpoints.len())
+            } else if p.length_m > 0.0 {
                 let loops = plan.dist * 1000.0 / p.length_m;
                 if loops > 1.15 {
                     format!(
@@ -896,7 +907,7 @@ impl App {
 
     fn start_run(&mut self) {
         if self.run_busy { return; }
-        if self.run_page.route_mode == RouteMode::Road && self.network.is_none() {
+        if self.run_page.route_mode.uses_network() && self.network.is_none() {
             self.status = "请先加载路网并刷新路线点位".into();
             return;
         }
@@ -930,11 +941,7 @@ impl App {
         self.config.face_check = page.face_check;
         self.config.manual_altitude = manual_altitude;
         self.config.manual_altitude_range = manual_altitude_range;
-        self.config.route_mode = if route_mode == RouteMode::Road {
-            "road".into()
-        } else {
-            "legacy".into()
-        };
+        self.config.route_mode = route_mode.as_str().into();
         let _ = crate::api::model::save_config(&self.config);
 
         let identity = self.identity.clone();

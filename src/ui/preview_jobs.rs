@@ -41,8 +41,9 @@ impl App {
         plan: &RunPlan,
     ) {
         let key = format!(
-            "{}:{}:{}:{}:{}",
-            self.osm_page.request_id, inputs.loaded_ms, plan.dist, plan.dur, plan.seed
+            "{}:{}:{}:{}:{}:{}",
+            self.osm_page.request_id, inputs.loaded_ms, plan.dist, plan.dur, plan.seed,
+            self.run_page.route_mode.as_str()
         );
         if key != self.run_page.preview_key {
             self.run_page.preview_cancel.cancel();
@@ -83,6 +84,7 @@ impl App {
             let cancel = self.run_page.preview_cancel.clone();
             let inputs = inputs.clone();
             let plan = plan.clone();
+            let mode = self.run_page.route_mode;
             let tx = self.preview_tx.clone();
             self.run_page.preview_busy = true;
             self.run_page.preview_stale = false;
@@ -107,13 +109,14 @@ impl App {
                 let result = cancel
                     .check()
                     .and_then(|_| {
-                        crate::track::generate_road::plan_road_view(
+                        crate::track::generate_road::plan_road_view_for_mode(
                             &net,
                             &inputs.points,
                             plan.dist * 1000.,
                             plan.dur,
                             plan.seed,
                             &inputs.fences,
+                            mode,
                         )
                     })
                     .and_then(|p| cancel.check().map(|_| p));

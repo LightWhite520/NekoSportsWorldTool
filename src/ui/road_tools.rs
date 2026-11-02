@@ -229,7 +229,9 @@ impl App {
         let request_id = self.begin_network_load();
         self.osm_page.offline = true;
         self.osm_page.status = "正在后台读取离线缓存…".into();
-        self.run_page.route_mode = crate::track::generate_road::RouteMode::Road;
+        if !self.run_page.route_mode.uses_network() {
+            self.run_page.route_mode = crate::track::generate_road::RouteMode::Road;
+        }
         let anchor = self
             .identity
             .anchor_coordinate()

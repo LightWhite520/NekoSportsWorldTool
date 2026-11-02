@@ -41,6 +41,7 @@ on:
     paths:
       - "src/**"
       - "crates/**"
+      - "tests/**"
       - "vendor/**"
       - "Cargo.toml"
       - "Cargo.lock"

@@ -403,6 +403,29 @@ const LOCAL_OSM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <tag k="highway" v="footway"/></way></osm>"#;
 
 #[test]
+fn regular_track_mode_is_reachable_on_phone_and_keeps_the_loaded_network() {
+    use crate::track::generate_road::RouteMode;
+    for (w, h) in [(320., 420.), (360., 480.), (412., 600.), (1100., 800.)] {
+        let ctx = egui::Context::default();
+        let mut app = App::from_state(&ctx, HeaderIdentity::default(), Session::default(), Config::default());
+        let net = Arc::new(route_planner::load_osm(LOCAL_OSM.as_bytes()).unwrap());
+        app.network = Some(net.clone());
+        app.run_page.route_mode = RouteMode::Road;
+        app.tab = 0;
+        let at = scroll_to_label(&mut app, &ctx, w, h, "跑道路线（规整）");
+        click(&mut app, &ctx, w, h, at);
+        assert_eq!(app.run_page.route_mode, RouteMode::Track);
+        assert!(Arc::ptr_eq(app.network.as_ref().unwrap(), &net));
+        assert!(!app.run_busy);
+        assert!(!app.osm_page.busy);
+        let at = scroll_to_label(&mut app, &ctx, w, h, "真实道路路由");
+        click(&mut app, &ctx, w, h, at);
+        assert_eq!(app.run_page.route_mode, RouteMode::Road);
+        assert!(Arc::ptr_eq(app.network.as_ref().unwrap(), &net));
+    }
+}
+
+#[test]
 fn manual_osm_button_loads_without_login_and_draws_roads_with_visible_status() {
     for (w, h) in [(320., 420.), (360., 480.), (412., 600.), (1100., 800.)] {
         let root = std::env::temp_dir().join(format!("osm-ui-{}", uuid::Uuid::new_v4()));

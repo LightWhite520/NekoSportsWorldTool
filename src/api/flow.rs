@@ -128,7 +128,7 @@ pub fn run_full_flow_cancellable(
     log("[road] 获取并核对当前校区围栏…");
     let fences = super::fence::fetch_geo_fence_response(client)
         .map_err(|e| format!("无法确认本次围栏：{e}"))?;
-    let fences = if params.route_mode == RouteMode::Road && !fences.polygons.is_empty() {
+    let fences = if params.route_mode.uses_network() && !fences.polygons.is_empty() {
         super::campus::selected_response(
             fences,
             super::model::load_config().school_campus.as_ref(),
@@ -183,7 +183,7 @@ pub fn run_full_flow_cancellable(
     // 随机 0-4 秒偏移（终端上报的 flag 与首点差 <5s），轨迹/提交/OBS/五点统一使用
     let start_ms = params.start_ms + (rand::random::<u32>() % 5) as i64 * 1000;
     let mut track = match params.route_mode {
-        RouteMode::Road => {
+        RouteMode::Road | RouteMode::Track => {
             if !fences.polygons.is_empty() {
                 super::school_roads::validate_fences(&fences.polygons)?;
             }
@@ -204,7 +204,12 @@ pub fn run_full_flow_cancellable(
             } else {
                 "[road] 在学校围栏内沿点位闭环重复补足距离"
             });
-            crate::track::generate_road::build_road(
+            let generate = if params.route_mode == RouteMode::Track {
+                crate::track::generate_road::build_track
+            } else {
+                crate::track::generate_road::build_road
+            };
+            generate(
                 params.dist,
                 params.dur,
                 params.seed,

@@ -38,6 +38,18 @@ pub fn position(points: &[(f64, f64)], arcs: &[f64], distance: f64) -> Option<(f
         points[i - 1].1 + (points[i].1 - points[i - 1].1) * f,
     ))
 }
+/// A complete sampled activity ends at its last sample, even on a partial lap.
+pub fn trajectory_position(points: &[(f64, f64)], arcs: &[f64], distance: f64) -> Option<(f64, f64)> {
+    let total = *arcs.last()?;
+    if total <= 0. || points.len() != arcs.len() {
+        return None;
+    }
+    if distance >= total {
+        points.last().copied()
+    } else {
+        position(points, arcs, distance.max(0.))
+    }
+}
 #[cfg(test)]
 mod tests {
     #[test]

@@ -10,8 +10,12 @@ pub mod model;
 pub mod postfix;
 pub mod route_view;
 mod school_track;
+mod track_drift;
 pub mod stats;
 pub mod wire;
+
+#[cfg(test)]
+mod regularity_tests;
 
 #[cfg(test)]
 mod tests {
