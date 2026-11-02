@@ -1,5 +1,5 @@
 use super::generate_road::{
-    align_network, build_road, build_track, plan_road_view, plan_road_view_for_mode, RouteMode,
+    align_network, build_road, build_regular_road, plan_road_view, plan_road_view_for_mode, RouteMode,
 };
 use super::geom::wgs84_to_bd09;
 
@@ -10,9 +10,14 @@ mod fixture;
 fn offline_comparison() {
     let (net, points) = fixture::stadium();
     let road = build_road(2110.0, 900, 7, 0, &points, &points, &net).unwrap();
-    let track = build_track(2110.0, 900, 7, 0, &points, &points, &net).unwrap();
+    let track = build_regular_road(2110.0, 900, 7, 0, &points, &points, &net).unwrap();
     road.validate_consistency().unwrap();
     track.validate_consistency().unwrap();
+    assert_eq!(road.totalSteps, track.totalSteps);
+    assert_eq!(road.locations.len(), track.locations.len());
+    for (a, b) in road.locations.iter().zip(&track.locations) {
+        assert_eq!((a.totalTime, a.totalDis, a.speed, a.steps), (b.totalTime, b.totalDis, b.speed, b.steps));
+    }
     if let Some(directory) = std::env::var_os("NEKO_TRACK_COMPARISON_DIR") {
         let directory = std::path::PathBuf::from(directory);
         std::fs::create_dir_all(&directory).unwrap();
@@ -47,7 +52,7 @@ fn track_samples_follow_the_route_with_bounded_continuous_drift() {
     let mut aligned = net;
     align_network(&mut aligned);
     for seed in 0..20 {
-        let track = build_track(2110., 900, seed, 123000, &points, &points, &aligned).unwrap();
+        let track = build_regular_road(2110., 900, seed, 123000, &points, &points, &aligned).unwrap();
         track.validate_consistency().unwrap();
         assert_eq!(track.locations.len(), 902);
         assert_eq!(track.totalTime, 900);
@@ -90,7 +95,7 @@ fn track_preview_equals_generated_and_encoded_coordinates() {
         plan_road_view_for_mode(&net, &points, 2110., 900, 7, &[], RouteMode::Track).unwrap();
     let mut net = net;
     align_network(&mut net);
-    let track = build_track(2110., 900, 7, 123000, &points, &points, &net).unwrap();
+    let track = build_regular_road(2110., 900, 7, 123000, &points, &points, &net).unwrap();
     assert_eq!(
         preview.route,
         track
@@ -159,4 +164,36 @@ fn track_mode_and_ordinary_modes_roundtrip_independently() {
     assert!(!RouteMode::Legacy.uses_network());
     assert!(RouteMode::Road.uses_network());
     assert!(RouteMode::Track.uses_network());
+}
+
+#[test]
+fn confirmed_counterclockwise_track_uses_bounded_drift_and_exact_preview() {
+    use super::generate_road::{build_track, plan_track_view, track_itinerary};
+    let (net, points) = fixture::stadium();
+    let points: Vec<_> = points.into_iter().map(|(a, b)| wgs84_to_bd09(a, b)).collect();
+    let mut outline: Vec<_> = net.graph.node_weights().map(|n| n.coord).collect();
+    outline.push(outline[0]);
+    let candidate = route_planner::athletics::TrackCandidate {
+        id: "synthetic-stadium".into(), source: "manual".into(), counterclockwise_allowed: true,
+        points: outline.into_iter().map(|c| {
+            let (lat, lon) = wgs84_to_bd09(c.lat, c.lon);
+            route_planner::Coord::new(lon, lat)
+        }).collect(),
+    };
+    let mut aligned = net.clone();
+    align_network(&mut aligned);
+    let itinerary = track_itinerary(&aligned, &points, 2110., &candidate).unwrap();
+    let route = itinerary.expand(2110.).unwrap();
+    for seed in 0..8 {
+        let preview = plan_track_view(&net, &points, 2110., 900, seed, &[], &candidate).unwrap();
+        let track = build_track(&aligned, &points, 2110., 900, seed, 123000, &candidate).unwrap();
+        assert!(preview.track_mode);
+        assert_eq!(preview.route, track.locations.iter().map(|p| (p.gLat, p.gLng)).collect::<Vec<_>>());
+        for p in &track.locations {
+            let expected = route_planner::itinerary::at(&route, p.totalDis);
+            let delta = offset((p.gLat, p.gLng), (expected.lat, expected.lon));
+            assert!(delta.0.hypot(delta.1) <= 0.35);
+        }
+        assert_eq!(super::route_view::position_with_end(&preview.route, &preview.arcs, preview.length_m, true), preview.route.last().copied());
+    }
 }

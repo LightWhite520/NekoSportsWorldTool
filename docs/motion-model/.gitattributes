@@ -1,0 +1,4 @@
+# Collapse generated artifacts in GitHub review; sources remain inspectable.
+motion-comparison.svg linguist-generated=true
+comparison-metrics.json linguist-generated=true
+synthetic-motion-*.json linguist-generated=true

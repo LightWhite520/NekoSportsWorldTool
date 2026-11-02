@@ -30,6 +30,7 @@ pub mod records;
 mod road_tools;
 pub mod run;
 pub mod theme;
+mod track_editor;
 pub mod user;
 
 const MAP_USER_AGENT: &str = concat!(

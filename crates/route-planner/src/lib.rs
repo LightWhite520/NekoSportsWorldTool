@@ -10,13 +10,16 @@
 
 use petgraph::graph::NodeIndex;
 
+pub mod athletics;
 pub mod biomech;
 pub mod boundary;
 pub mod check;
 pub mod gpx;
 pub mod graph;
+pub mod itinerary;
 pub mod kinematics;
 pub mod load;
+pub mod motion;
 pub mod noise;
 pub mod project;
 pub mod route;
@@ -103,22 +106,7 @@ pub fn plan_route_split(
         {
             return Err("路线连线越出学校围栏".into());
         }
-        let mut s = 0.0;
-        let mut out = Vec::new();
-        for (i, c) in coords.iter().enumerate() {
-            if i > 0 {
-                let a = g.to_m(coords[i - 1]);
-                let b = g.to_m(*c);
-                s += (b[0] - a[0]).hypot(b[1] - a[1]);
-            }
-            out.push(RoutePoint {
-                lon: c.lon,
-                lat: c.lat,
-                s,
-                curvature: 0.0,
-            });
-        }
-        out
+        itinerary::polyline(&coords)?.points
     };
     if points.is_empty() {
         return Err("路线平滑后为空".into());

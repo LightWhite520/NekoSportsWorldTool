@@ -1,0 +1,54 @@
+{
+  "baseline": "Development intermediate motion-v2, not upstream main",
+  "fixture": "synthetic circle",
+  "distance_m": 2000.0,
+  "duration_s": 800,
+  "seed": 7,
+  "statistics_interval_s": [
+    30,
+    770
+  ],
+  "plot_interval_s": [
+    120.0,
+    240.0
+  ],
+  "cadence_source": "Differences of unrounded cumulative steps, multiplied by 60",
+  "metrics": [
+    {
+      "model": "motion-v2",
+      "speed_std_m_s": 0.060291866588425676,
+      "acceleration_rms_m_s2": 0.015337176815764355,
+      "jerk_rms_m_s3": 0.021777636862459777,
+      "cadence_delta_rms_spm": 0.5528898124061804,
+      "distance_error_m": 4.9670534281176515e-06,
+      "total_steps_unrounded": 2391.009920779714
+    },
+    {
+      "model": "motion-v3",
+      "speed_std_m_s": 0.05738130841730885,
+      "acceleration_rms_m_s2": 0.0051917165835874135,
+      "jerk_rms_m_s3": 0.0036906755840062267,
+      "cadence_delta_rms_spm": 0.2062755598872322,
+      "distance_error_m": -8.339587793670944e-06,
+      "total_steps_unrounded": 2391.0253908754685
+    }
+  ],
+  "changes": {
+    "speed_std_m_s": {
+      "retained_percent": 95.17255255839837,
+      "reduced_percent": 4.827447441601629
+    },
+    "acceleration_rms_m_s2": {
+      "retained_percent": 33.850536157678604,
+      "reduced_percent": 66.14946384232138
+    },
+    "jerk_rms_m_s3": {
+      "retained_percent": 16.94708938033677,
+      "reduced_percent": 83.05291061966322
+    },
+    "cadence_delta_rms_spm": {
+      "retained_percent": 37.3086201370793,
+      "reduced_percent": 62.691379862920705
+    }
+  }
+}

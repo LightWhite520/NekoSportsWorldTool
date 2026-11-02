@@ -12,6 +12,7 @@ use crate::graph::{Coord, EdgeData, RoadGraph};
 
 /// 一条道路 way。
 pub struct OsmRoad {
+    pub running_track: bool,
     pub id: u64,
     pub node_refs: Vec<u64>,
     pub oneway: bool,
@@ -173,6 +174,18 @@ pub fn parse_osm(bytes: &[u8]) -> Result<ParsedOsm, String> {
                                 .iter()
                                 .find(|(k, _)| k == "highway")
                                 .map(|(_, v)| v.clone())
+                                .or_else(|| {
+                                    tags.iter()
+                                        .any(|(k, v)| {
+                                            (k == "leisure" && v == "track")
+                                                || (k == "sport"
+                                                    && matches!(
+                                                        v.as_str(),
+                                                        "running" | "athletics"
+                                                    ))
+                                        })
+                                        .then(|| "running_track".into())
+                                })
                             {
                                 if !is_motorized(&h) && refs.len() >= 2 {
                                     let oneway = tags.iter().any(|(k, v)| {
@@ -185,6 +198,14 @@ pub fn parse_osm(bytes: &[u8]) -> Result<ParsedOsm, String> {
                                         .find(|(k, _)| k == "maxspeed")
                                         .and_then(|(_, v)| parse_maxspeed(v));
                                     roads.push(OsmRoad {
+                                        running_track: tags.iter().any(|(k, v)| {
+                                            (k == "leisure" && v == "track")
+                                                || (k == "sport"
+                                                    && matches!(
+                                                        v.as_str(),
+                                                        "running" | "athletics"
+                                                    ))
+                                        }),
                                         id,
                                         node_refs: refs,
                                         oneway,
@@ -251,6 +272,10 @@ pub fn build_graph(parsed: &ParsedOsm) -> RoadGraph {
     let mut node_map: HashMap<u64, petgraph::graph::NodeIndex> = HashMap::new();
 
     for r in &parsed.roads {
+        // Never bridge a missing OSM node by connecting its neighbors.
+        if r.node_refs.iter().any(|id| !parsed.nodes.contains_key(id)) {
+            continue;
+        }
         // 先解析节点 id → NodeIndex（避免闭包跨迭代借用）。
         let idxs: Vec<petgraph::graph::NodeIndex> = r
             .node_refs
@@ -277,7 +302,7 @@ pub fn build_graph(parsed: &ParsedOsm) -> RoadGraph {
                     next,
                     EdgeData {
                         way_id: r.id,
-                        oneway: r.oneway,
+                        oneway: r.oneway || r.oneway_reversed,
                         highway: r.highway.clone(),
                         maxspeed_kmh: r.maxspeed_kmh,
                         length_m: len,
@@ -290,7 +315,7 @@ pub fn build_graph(parsed: &ParsedOsm) -> RoadGraph {
                     p,
                     EdgeData {
                         way_id: r.id,
-                        oneway: r.oneway,
+                        oneway: r.oneway || r.oneway_reversed,
                         highway: r.highway.clone(),
                         maxspeed_kmh: r.maxspeed_kmh,
                         length_m: len,
@@ -313,10 +338,100 @@ pub fn build_graph(parsed: &ParsedOsm) -> RoadGraph {
         }
     }
     g.buildings = bld;
+    g.tracks = track_candidates(parsed);
 
     g.compute_anchor();
     g.rebuild_index();
     g
+}
+
+fn track_candidates(parsed: &ParsedOsm) -> Vec<crate::athletics::TrackCandidate> {
+    use crate::athletics::{normalize, TrackCandidate};
+    let mut out = Vec::new();
+    let mut used = std::collections::HashSet::new();
+    let mut roads: Vec<_> = parsed.roads.iter().collect();
+    roads.sort_by_key(|r| r.id);
+    for r in &roads {
+        if used.contains(&r.id) {
+            continue;
+        }
+        let mut refs = r.node_refs.clone();
+        let mut parts = vec![(r.id, false)];
+        let mut directional = vec![(r.oneway, r.oneway_reversed, false)];
+        if r.running_track {
+            while refs.first() != refs.last() {
+                let end = refs.last();
+                let matches: Vec<_> = roads
+                    .iter()
+                    .filter(|p| {
+                        p.running_track
+                            && !used.contains(&p.id)
+                            && !parts.iter().any(|(id, _)| *id == p.id)
+                            && (p.node_refs.first() == end || p.node_refs.last() == end)
+                    })
+                    .collect();
+                if matches.len() != 1 {
+                    break;
+                }
+                let next = matches[0];
+                let rev = next.node_refs.last() == end;
+                let mut seq = next.node_refs.clone();
+                if rev {
+                    seq.reverse();
+                }
+                refs.extend(seq.into_iter().skip(1));
+                parts.push((next.id, rev));
+                directional.push((next.oneway, next.oneway_reversed, rev));
+                if refs.len() > 4096 {
+                    break;
+                }
+            }
+        }
+        if refs.first() != refs.last() {
+            continue;
+        }
+        let coords: Option<Vec<_>> = refs
+            .iter()
+            .map(|id| parsed.nodes.get(id).copied())
+            .collect();
+        let Some(coords) = coords else { continue };
+        let Ok(points) = normalize(&coords) else {
+            continue;
+        };
+        let reversed = points.get(1) != coords.get(1);
+        let allowed = directional.iter().all(|&(forward, back, rev)| {
+            if !forward && !back {
+                true
+            } else {
+                let traversed_backward = rev ^ reversed;
+                if back {
+                    traversed_backward
+                } else {
+                    !traversed_backward
+                }
+            }
+        });
+        for &(id, _) in &parts {
+            used.insert(id);
+        }
+        let id = parts
+            .iter()
+            .map(|p| p.0.to_string())
+            .collect::<Vec<_>>()
+            .join("-");
+        out.push(TrackCandidate {
+            id: format!("osm-{id}"),
+            source: if r.running_track {
+                "tagged"
+            } else {
+                "geometry"
+            }
+            .into(),
+            points,
+            counterclockwise_allowed: allowed,
+        });
+    }
+    out
 }
 
 /// 完整流程：解析 OSM → 构建路网。

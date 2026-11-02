@@ -37,7 +37,7 @@ def main():
     fig, axes = plt.subplots(2, 2, figsize=(11, 10.5),
                              gridspec_kw={"height_ratios": [2.1, 1]})
     colors = ["#e27542", "#16846d"]
-    titles = ["Existing road mode (unchanged)", "Track mode (regular)"]
+    titles = ["Integrated road mode (motion-v3)", "Integrated track mode (regular)"]
     metrics = []
     for column, (trace, xy, color, title) in enumerate(zip(traces, paths, colors, titles)):
         times = np.array([p["totalTime"] for p in trace["locations"]])

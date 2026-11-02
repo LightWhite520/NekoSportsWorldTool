@@ -26,7 +26,8 @@
 
 - 完整实现 NetSecKit 信封加密与响应解密，每个响应强制 RSA 验签（fail-closed）
 - 人机验证全程本地完成，不依赖任何外部服务
-- 轨迹生成器：打卡点拟合环 + 自然速度曲线 + 哨兵点 / 断崖 / 点位吸附
+- 轨迹生成器：经典几何与真实路网共用连续运动模型，统一计算时间、位移、步数和分段统计
+- 跑道模式：OSM 候选识别、手动轮廓与确认；先经过必经点，再逆时针绕圈，无法连接时明确报错
 - 设备身份持久化（DeviceId / 安装时间 / MAC），稳定不易触发风控
 - GUI 与 CLI 共用同一套协议层，数据文件互通
 
@@ -40,6 +41,8 @@ NekoSportsWorldTool run                                  # 一键跑步（--alti
 NekoSportsWorldTool ai --sport 2 --score 26000           # AI 运动
 NekoSportsWorldTool rank main --type 1 --sort 1          # 排行榜
 NekoSportsWorldTool update [--check]           # 自动更新（--check 仅检查不下载）
+NekoSportsWorldTool motion-check                        # 离线运动一致性诊断，不读取账号配置
+NekoSportsWorldTool motion-check --map campus.osm        # 仅列出本地跑道候选
 NekoSportsWorldTool template --file run.gpx   # 本地分析真实记录海拔（不会上传）
 NekoSportsWorldTool help                                 # 全部命令
 ```
@@ -75,17 +78,22 @@ Windows、Linux 和 macOS GUI 的设备页支持「获取本机系统定位」�
 
 青龙定时任务：首次手工 `login --remember` 一次，之后定时挂 `run` 即可。
 
-桌面 CLI 可用 `location` 查看系统定位，或 `location --save --city <实际城市>` 转换为 BD-09 后保存。CLI 的平台依赖见 [系统定位](docs/system-location.md)。GUI 保留地图分支的原生定位、取消和城市识别流程。
+桌面 CLI 可用 `location` 查看系统定位，或 `location --save --city <实际城市>` 转换为 BD-09 后保存。平台依赖见 [系统定位](docs/system-location.md)。
 
-### 跑道路线（规整）
+### 跑道与运动模型
 
-在跑步页的「路线算法」选择 **跑道路线（规整）**，使用已导入或下载的路网，刷新点位后核对预览路线是否沿实际跑道。此模式沿既有规划路线每秒生成一个点，取消随机横跳；无围栏时坐标漂移限制在 0.35 米内，有围栏时沿路网并保留拐点。预览显示最终生成的轨迹点，包含末尾不足一圈的部分。
+本整合版将地图选点、在线路网、系统定位、加密登录备份与 `motion-v3` 合并。经典和道路路线共用平滑配速、步频与统一时间轴；不再沿用整合前的旧运动生成器。
 
-该选项只约束采样和漂移，不会把任意道路自动拟合成椭圆跑道；如果预览本身绕行或偏离跑道，请先调整路网和点位。「真实道路路由」与「经典打卡点环」的生成行为保持原样。CLI 可使用 `run --route track`。
+在跑步页选择 **跑道路线（规整）** 可沿点位闭环生成小幅连续漂移的轨迹，无围栏时偏移上限为 0.35 米，有围栏时沿路网并校验连线。普通道路模式保留 `motion-v3` 的默认观测偏移。预览显示跑道模式实际生成的坐标，包括末尾不足一圈的部分。
 
-本次未调整有效里程、有效时间或 policy 配速窗口，轨迹颜色不能作为记录有效性的依据。下图使用同一路网、种子和里程的合成数据，仅验证离线几何效果，不代表服务端判定结果。
+需要识别跑道并逆时针绕圈时，在道路或规整模式的预览中开启「跑道模式：必经点后逆时针绕圈」，选择并确认候选轮廓；没有可靠候选时可手动标注。路线先经过必经点，再沿确认跑道逆时针绕圈，并使用上述漂移约束。地图、点位或轮廓变化后须重新确认。仅选择「规整」不会将任意道路自动拟合为椭圆。
 
-![普通道路与跑道规整模式对比](docs/track-regularity.png)
+CLI 可用 `run --route track --track <已确认ID>`，或用 `--track off` 沿点位闭环。有效里程/时间仍未按学校 policy 配速窗口分段核算，轨迹颜色不能作为记录有效性的依据。
+
+![整合版道路与跑道规整模式对比](docs/track-regularity.png)
+
+图中是合成数据的离线检查，不代表服务端判定结果。实现约束、诊断和验证范围见 [MOTION_MODEL.md](MOTION_MODEL.md)。
+
 
 ## 常见问题
 
