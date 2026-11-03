@@ -3,7 +3,7 @@ use super::{map::MapState, run_review::draw_preview};
 use crate::track::review::RunReview;
 use eframe::egui;
 
-pub(crate) fn run(capture_dir: Option<std::path::PathBuf>) -> Result<(), String> {
+fn demo_data(variation: f64) -> Result<RunReview, String> {
     let points: Vec<_> = (0..=120)
         .map(|i| {
             let angle = i as f64 / 120.0 * std::f64::consts::TAU;
@@ -16,7 +16,15 @@ pub(crate) fn run(capture_dir: Option<std::path::PathBuf>) -> Result<(), String>
     let route =
         route_planner::itinerary::Itinerary::looping(route_planner::itinerary::polyline(&points)?)
             .expand(2090.0)?;
-    let mut track = crate::track::motion::build_regular(&route, 840, 7, 1_700_000_000_000, &[])?;
+    let mut track = crate::track::motion::build_with_variation(
+        &route,
+        840,
+        7,
+        1_700_000_000_000,
+        &[],
+        true,
+        variation,
+    )?;
     crate::track::altitude::override_bd_a_range(
         &mut track,
         crate::track::altitude::AltitudeRange {
@@ -24,7 +32,11 @@ pub(crate) fn run(capture_dir: Option<std::path::PathBuf>) -> Result<(), String>
             max_m: 22.8,
         },
     )?;
-    let data = RunReview::from_track(&track)?;
+    RunReview::from_track(&track)
+}
+
+pub(crate) fn run(capture_dir: Option<std::path::PathBuf>, variation: f64) -> Result<(), String> {
+    let data = demo_data(variation)?;
     if let Some(path) = &capture_dir {
         std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
         std::fs::write(
@@ -44,6 +56,7 @@ pub(crate) fn run(capture_dir: Option<std::path::PathBuf>) -> Result<(), String>
             super::theme::apply(&cc.egui_ctx);
             Ok(Box::new(Demo {
                 data,
+                variation: variation as f32,
                 map: MapState::default(),
                 map_size: egui::Vec2::ZERO,
                 capture_dir,
@@ -58,6 +71,7 @@ pub(crate) fn run(capture_dir: Option<std::path::PathBuf>) -> Result<(), String>
 
 struct Demo {
     data: RunReview,
+    variation: f32,
     map: MapState,
     map_size: egui::Vec2,
     capture_dir: Option<std::path::PathBuf>,
@@ -96,6 +110,18 @@ impl eframe::App for Demo {
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label("离线合成数据示例 · 按钮仅演示，不会提交记录");
+            let previous = self.variation;
+            super::run::draw_motion_variation(ui, &mut self.variation);
+            if previous != self.variation {
+                match demo_data(self.variation as f64) {
+                    Ok(data) => {
+                        self.data = data;
+                        self.map_size = egui::Vec2::ZERO;
+                        self.feedback.clear();
+                    }
+                    Err(error) => self.feedback = error,
+                }
+            }
             if !self.feedback.is_empty() {
                 ui.label(&self.feedback);
             }

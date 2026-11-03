@@ -61,6 +61,9 @@ pub struct Config {
     pub pace_min: f32,
     #[serde(default = "default_pace_max")]
     pub pace_max: f32,
+    /// 配速、步频与步幅共用的波动强度；0 关闭额外噪声，1 保留原有幅度。
+    #[serde(default = "default_motion_variation")]
+    pub motion_variation: f32,
     #[serde(default)]
     pub face_check: bool,
     /// 跑步时覆盖轨迹点 bdA；为空表示使用生成器的海拔曲线。
@@ -98,6 +101,9 @@ fn default_route_mode() -> String {
 fn default_f32() -> f32 {
     1.0
 }
+fn default_motion_variation() -> f32 {
+    1.0
+}
 fn default_pace_min() -> f32 {
     360.0
 }
@@ -132,6 +138,7 @@ impl Default for Config {
             dist_max: 1.5,
             pace_min: default_pace_min(),
             pace_max: default_pace_max(),
+            motion_variation: default_motion_variation(),
             face_check: true,
             manual_altitude: None,
             manual_altitude_range: None,

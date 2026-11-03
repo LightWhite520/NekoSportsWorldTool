@@ -17,7 +17,13 @@ pub fn dispatch(args: Vec<String>) -> i32 {
         #[cfg(all(feature = "gui", not(target_os = "android")))]
         "preview-demo" => {
             let flags = parse_flags(&rest);
-            match crate::ui::run_review_demo::run(get(&flags, "capture-dir").map(std::path::PathBuf::from)) {
+            let variation = match get(&flags, "variation").unwrap_or("1").parse::<f64>() {
+                Ok(value) => value,
+                Err(_) => { eprintln!("--variation 必须为 0–5 倍的数值"); return 1; }
+            };
+            match crate::ui::run_review_demo::run(
+                get(&flags, "capture-dir").map(std::path::PathBuf::from), variation,
+            ) {
                 Ok(()) => 0,
                 Err(e) => { eprintln!("离线预览失败：{e}"); 1 }
             }
@@ -157,6 +163,16 @@ fn cmd_run(rest: &[&str]) -> i32 {
         seed
     };
     let cfg = model::load_config();
+    let motion_variation = match get(&flags, "variation") {
+        Some(value) => match value.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => { eprintln!("--variation 必须为 0–5 倍的数值"); return 1; }
+        },
+        None => cfg.motion_variation as f64,
+    };
+    if let Err(e) = route_planner::motion::validate_variation(motion_variation) {
+        eprintln!("{e}"); return 1;
+    }
     let route_mode = crate::track::generate_road::RouteMode::from_str(
         get(&flags, "route").unwrap_or(&cfg.route_mode),
     );
@@ -227,6 +243,7 @@ fn cmd_run(rest: &[&str]) -> i32 {
         dur,
         start_ms,
         face_check: face as i64,
+        motion_variation,
         manual_altitude,
         manual_altitude_range,
         seed,

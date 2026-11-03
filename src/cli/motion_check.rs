@@ -26,6 +26,8 @@ fn check(args: &[&str]) -> Result<serde_json::Value, String> {
         }
     };
     let distance = number("distance", 2000.)?;
+    let variation = number("variation", 1.0)?;
+    route_planner::motion::validate_variation(variation)?;
     let seconds = number("duration", 800.)?;
     if !seconds.is_finite() || seconds.fract() != 0. || !(2. ..=86400.).contains(&seconds) {
         return Err("--duration 需要 2–86400 的整数秒".into());
@@ -63,7 +65,7 @@ fn check(args: &[&str]) -> Result<serde_json::Value, String> {
         (Itinerary::looping(polyline(&coords)?), 0)
     };
     let route = itinerary.expand(distance)?;
-    let samples = route_planner::motion::generate(&route, seconds as i64, seed)?;
+    let samples = route_planner::motion::generate_with_variation(&route, seconds as i64, seed, variation)?;
     let mut max_accel = 0f64;
     let mut max_brake = 0f64;
     let mut max_jerk = 0f64;
@@ -79,6 +81,7 @@ fn check(args: &[&str]) -> Result<serde_json::Value, String> {
     let mut report = serde_json::json!({"model":route_planner::motion::VERSION,"seed":seed,"duration_s":last.time,"distance_m":last.distance,"distance_error_m":last.distance-distance,
         "steps":last.steps.round(),"prefix_m":itinerary.prefix.length_m,"circuit_m":itinerary.circuit.length_m,"candidates":candidate_count,"max_acceleration_m_s2":max_accel,"max_braking_m_s2":max_brake,"max_jerk_m_s3":max_jerk,"samples":samples.len()});
     // Optional numeric timeline for offline comparisons; never includes coordinates.
+    report["motion_variation"] = serde_json::json!(variation);
     if get(&flags, "timeline").is_some() {
         report["timeline"] =
             serde_json::json!(samples.iter().map(|s| serde_json::json!({

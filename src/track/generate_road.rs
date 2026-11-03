@@ -298,7 +298,7 @@ pub fn build_road(
     must_bd: &[(f64, f64)],
     net: &RoadGraph,
 ) -> Result<Track, String> {
-    build_road_inner(dist, dur, seed, start_ms, route_bd, must_bd, net, false)
+    build_road_with_variation(dist, dur, seed, start_ms, route_bd, must_bd, net, false, 1.0)
 }
 
 pub fn build_regular_road(
@@ -310,12 +310,13 @@ pub fn build_regular_road(
     must_bd: &[(f64, f64)],
     net: &RoadGraph,
 ) -> Result<Track, String> {
-    build_road_inner(dist, dur, seed, start_ms, route_bd, must_bd, net, true)
+    build_road_with_variation(dist, dur, seed, start_ms, route_bd, must_bd, net, true, 1.0)
 }
 
-fn build_road_inner(
+pub fn build_road_with_variation(
     dist: f64, dur: i64, seed: u64, start_ms: i64,
     route_bd: &[(f64, f64)], must_bd: &[(f64, f64)], net: &RoadGraph, regular: bool,
+    variation: f64,
 ) -> Result<Track, String> {
     let mut required = route_bd.to_vec();
     for p in must_bd {
@@ -325,8 +326,9 @@ fn build_road_inner(
     }
     let route = required_route(net, &required, dist, dur, seed)?;
     let expanded = route_planner::itinerary::Itinerary::looping(route).expand(dist)?;
-    let build = if regular { super::motion::build_regular } else { super::motion::build };
-    let track = build(&expanded, dur, seed, start_ms, &net.boundaries)?;
+    let track = super::motion::build_with_variation(
+        &expanded, dur, seed, start_ms, &net.boundaries, regular, variation,
+    )?;
     for &point in &required {
         if !super::wire::passes_point(&track, point) {
             return Err("最终轨迹未覆盖全部必经点".into());
@@ -651,8 +653,17 @@ pub fn build_track(
     start_ms: i64,
     candidate: &route_planner::athletics::TrackCandidate,
 ) -> Result<Track, String> {
+    build_track_with_variation(net, points, dist, dur, seed, start_ms, candidate, 1.0)
+}
+
+pub fn build_track_with_variation(
+    net: &RoadGraph, points: &[(f64, f64)], dist: f64, dur: i64, seed: u64, start_ms: i64,
+    candidate: &route_planner::athletics::TrackCandidate, variation: f64,
+) -> Result<Track, String> {
     let route = track_itinerary(net, points, dist, candidate)?.expand(dist)?;
-    let track = super::motion::build_regular(&route, dur, seed, start_ms, &net.boundaries)?;
+    let track = super::motion::build_with_variation(
+        &route, dur, seed, start_ms, &net.boundaries, true, variation,
+    )?;
     if points
         .iter()
         .any(|&p| !super::wire::passes_point(&track, p))

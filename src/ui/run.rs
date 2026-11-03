@@ -77,6 +77,7 @@ pub struct RunPage {
     pub dist_max: f32,
     pub pace_min: f32,
     pub pace_max: f32,
+    pub motion_variation: f32,
     /// 手动绝对海拔（米）；空白表示使用生成器默认海拔。
     pub manual_altitude: String,
     /// 0=随机时刻 1=指定时刻
@@ -366,6 +367,7 @@ impl App {
                     draw_pace_inputs(ui);
                 });
             }
+            draw_motion_variation(ui, &mut page.motion_variation);
             mobile::row(ui, |ui| {
                 ui.label("手动海拔（米/区间）：");
                 mobile::text_edit(
@@ -978,10 +980,16 @@ impl App {
         let start_ms = plan.start_ms;
         let face_check = if page.face_check { 1 } else { 0 };
         let route_mode = page.route_mode;
+        let motion_variation = page.motion_variation as f64;
+        if let Err(e) = route_planner::motion::validate_variation(motion_variation) {
+            self.status = e;
+            return;
+        }
         self.config.dist_min = page.dist_min;
         self.config.dist_max = page.dist_max;
         self.config.pace_min = page.pace_min;
         self.config.pace_max = page.pace_max;
+        self.config.motion_variation = page.motion_variation;
         self.config.face_check = page.face_check;
         self.config.manual_altitude = manual_altitude;
         self.config.manual_altitude_range = manual_altitude_range;
@@ -1030,6 +1038,7 @@ impl App {
                 manual_altitude_range,
                 seed,
                 route_mode,
+                motion_variation,
             };
             let payload = match crate::api::flow::run_reviewed_flow_cancellable(
                 &mut client,
@@ -1079,6 +1088,17 @@ impl App {
             tx.send(format!("__RUN_DONE__{payload}")).ok();
         });
     }
+}
+
+pub(super) fn draw_motion_variation(ui: &mut egui::Ui, variation: &mut f32) {
+    mobile::row(ui, |ui| {
+        ui.label("随机波动强度：");
+        mobile::drag_f32(ui, "run_motion_variation", variation, 0.0..=5.0, 0.1, 1, " 倍");
+        if ui.small_button("恢复默认强度").clicked() {
+            *variation = 1.0;
+        }
+    });
+    ui.label("配速、步频和步幅联动；1 倍保持原有效果，0 关闭额外随机波动，起停和转弯仍保留。");
 }
 
 #[cfg(test)]

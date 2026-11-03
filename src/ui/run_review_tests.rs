@@ -113,3 +113,40 @@ fn stale_or_cancelled_generation_is_never_presented_for_confirmation() {
         ));
     }
 }
+
+#[test]
+fn shared_variation_setting_restores_default_on_small_and_large_screens() {
+    for (width, height) in [(320.0, 480.0), (880.0, 900.0)] {
+        let ctx = egui::Context::default();
+        let (mut app, _response) = ready(&ctx);
+        app.run_review = None;
+        app.run_busy = false;
+        app.run_page.motion_variation = 2.5;
+        let position = scroll_to_label(&mut app, &ctx, width, height, "恢复默认强度");
+        assert_eq!(app.run_page.motion_variation, 2.5);
+        click(&mut app, &ctx, width, height, position);
+        assert_eq!(app.run_page.motion_variation, 1.0);
+        assert!(!app.run_busy);
+        assert_eq!(app.active_jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn shared_variation_survives_config_roundtrip_and_older_configs_keep_original_default() {
+    let old: Config = serde_json::from_str("{}").unwrap();
+    assert_eq!(old.motion_variation, 1.0);
+    let config = Config {
+        motion_variation: 2.5,
+        ..old
+    };
+    let saved = serde_json::to_string(&config).unwrap();
+    let restored: Config = serde_json::from_str(&saved).unwrap();
+    let ctx = egui::Context::default();
+    let app = App::from_state(
+        &ctx,
+        HeaderIdentity::default(),
+        Session::default(),
+        restored,
+    );
+    assert_eq!(app.run_page.motion_variation, 2.5);
+}

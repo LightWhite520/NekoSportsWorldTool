@@ -9,7 +9,7 @@ use super::records::fetch_one_record;
 use super::submit::{submit_record, SubmitParams, SubmitResult};
 use crate::location::Coordinate;
 use crate::track::generate_road::RouteMode;
-use crate::track::generator::build as gen_track;
+use crate::track::generator::build_with_variation as gen_track;
 use crate::track::wire::{build_obs_object, five_point_wrapper, obs_keys};
 use serde_json::Value;
 
@@ -26,6 +26,8 @@ pub struct RunParams {
     /// 用户手动填写的海拔范围；与单值字段兼容，范围优先。
     pub manual_altitude_range: Option<crate::track::altitude::AltitudeRange>,
     pub seed: u64,
+    /// 配速、步频与派生步幅的统一随机波动强度，默认 1 倍。
+    pub motion_variation: f64,
     /// 路线算法模式。
     pub route_mode: RouteMode,
     pub track_selection: Option<crate::track::selection::TrackSelection>,
@@ -100,6 +102,7 @@ pub fn run_reviewed_flow_cancellable(
     review: &mut dyn FnMut(&crate::track::model::Track) -> Result<bool, String>,
 ) -> Result<RunOutcome, String> {
     control.check()?;
+    route_planner::motion::validate_variation(params.motion_variation)?;
     if !params.dist.is_finite() || params.dist <= 0.0 || params.dur <= 0 {
         return Err("距离和时长必须为正数".into());
     }
@@ -206,7 +209,7 @@ pub fn run_reviewed_flow_cancellable(
                 "[road] 在学校围栏内沿点位闭环重复补足距离"
             });
             if let Some(candidate) = candidate {
-                crate::track::generate_road::build_track(
+                crate::track::generate_road::build_track_with_variation(
                     &filtered,
                     &route_pts,
                     params.dist,
@@ -214,14 +217,10 @@ pub fn run_reviewed_flow_cancellable(
                     params.seed,
                     start_ms,
                     &candidate,
+                    params.motion_variation,
                 )?
             } else {
-                let build = if params.route_mode == RouteMode::Track {
-                    crate::track::generate_road::build_regular_road
-                } else {
-                    crate::track::generate_road::build_road
-                };
-                build(
+                crate::track::generate_road::build_road_with_variation(
                     params.dist,
                     params.dur,
                     params.seed,
@@ -229,6 +228,8 @@ pub fn run_reviewed_flow_cancellable(
                     &route_pts,
                     &route_pts,
                     &filtered,
+                    params.route_mode == RouteMode::Track,
+                    params.motion_variation,
                 )
                 .map_err(|e| format!("道路路由失败：{e}；请修复路网或主动切换经典模式"))?
             }
@@ -240,6 +241,7 @@ pub fn run_reviewed_flow_cancellable(
             (anchor.latitude, anchor.longitude),
             start_ms,
             &route_pts,
+            params.motion_variation,
         )?,
     };
     control.check()?;

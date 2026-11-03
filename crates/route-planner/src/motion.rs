@@ -8,6 +8,13 @@ pub const MAX_SPEED: f64 = 6.3;
 pub const ACCEL: f64 = 0.65;
 pub const BRAKE: f64 = 1.0;
 
+pub fn validate_variation(variation: f64) -> Result<(), String> {
+    if !variation.is_finite() || !(0.0..=5.0).contains(&variation) {
+        return Err("随机波动强度需要 0–5 倍的有限数值".into());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct Sample {
     pub time: i64,
@@ -53,6 +60,18 @@ impl SmoothNoise {
 }
 
 pub fn generate(route: &Route, duration: i64, seed: u64) -> Result<Vec<Sample>, String> {
+    generate_with_variation(route, duration, seed, 1.0)
+}
+
+/// Scale the two smooth noise processes together. Stride remains distance / steps,
+/// so changing variability never introduces a third, contradictory motion signal.
+pub fn generate_with_variation(
+    route: &Route,
+    duration: i64,
+    seed: u64,
+    variation: f64,
+) -> Result<Vec<Sample>, String> {
+    validate_variation(variation)?;
     if duration < 2
         || duration > 86400
         || route.points.len() < 2
@@ -75,7 +94,7 @@ pub fn generate(route: &Route, duration: i64, seed: u64) -> Result<Vec<Sample>, 
     let mut rng = StdRng::seed_from_u64(seed ^ 0x9e3779b97f4a7c15);
     let mut noise = Vec::with_capacity(duration as usize);
     // Engineering defaults, not parameters fitted to measured human running.
-    let mut pace_noise = SmoothNoise::new(24., 4., 0.02);
+    let mut pace_noise = SmoothNoise::new(24., 4., 0.02 * variation);
     for _ in 0..duration {
         noise.push(pace_noise.step(&mut rng));
     }
@@ -156,7 +175,7 @@ pub fn generate(route: &Route, duration: i64, seed: u64) -> Result<Vec<Sample>, 
         return Err("运动约束求解未收敛，请调整时长".into());
     }
     let mut cadence_rng = StdRng::seed_from_u64(seed ^ 0xc6a4a7935bd1e995);
-    let mut cadence_noise = SmoothNoise::new(10., 3., 1.);
+    let mut cadence_noise = SmoothNoise::new(10., 3., variation);
     let mut steps = 0.;
     for i in 1..result.len() {
         let v = (result[i - 1].speed + result[i].speed) * 0.5;
@@ -166,4 +185,78 @@ pub fn generate(route: &Route, duration: i64, seed: u64) -> Result<Vec<Sample>, 
         result[i].steps = steps;
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod variation_tests {
+    use super::*;
+
+    fn route() -> Route {
+        let points: Vec<_> = (0..=120)
+            .map(|i| {
+                let angle = i as f64 / 120.0 * std::f64::consts::TAU;
+                crate::Coord::new(
+                    10.0 + 60.0 * angle.cos() / (111320.0 * 30_f64.to_radians().cos()),
+                    30.0 + 60.0 * angle.sin() / 111132.0,
+                )
+            })
+            .collect();
+        crate::itinerary::Itinerary::looping(crate::itinerary::polyline(&points).unwrap())
+            .expand(2000.0)
+            .unwrap()
+    }
+
+    fn deviations(samples: &[Sample]) -> [f64; 3] {
+        let mut signals = [Vec::new(), Vec::new(), Vec::new()];
+        for pair in samples[30..samples.len() - 30].windows(2) {
+            let meters = pair[1].distance - pair[0].distance;
+            let steps = pair[1].steps - pair[0].steps;
+            signals[0].push(1000.0 / meters);
+            signals[1].push(steps * 60.0);
+            signals[2].push(meters / steps * 100.0);
+        }
+        signals.map(|values| {
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64).sqrt()
+        })
+    }
+
+    #[test]
+    fn shared_variation_changes_all_three_signals_and_preserves_motion_constraints() {
+        let route = route();
+        for seed in [7, 23] {
+            let mut prior = [0.0; 3];
+            for variation in [0.0, 1.0, 2.0, 5.0] {
+                let samples = generate_with_variation(&route, 800, seed, variation).unwrap();
+                assert!((samples.last().unwrap().distance - 2000.0).abs() < 0.01);
+                assert_eq!(samples.last().unwrap().time, 800);
+                for pair in samples.windows(2) {
+                    let acceleration = pair[1].speed - pair[0].speed;
+                    assert!((-BRAKE - 1e-9..=ACCEL + 1e-9).contains(&acceleration));
+                    assert!(pair[1].distance >= pair[0].distance);
+                    assert!(pair[1].steps >= pair[0].steps);
+                }
+                let deviations = deviations(&samples);
+                for (index, deviation) in deviations.iter().enumerate() {
+                    if variation == 0.0 {
+                        assert!(*deviation < 1e-7);
+                    } else {
+                        assert!(
+                            *deviation > prior[index] * 1.3,
+                            "seed={seed}, variation={variation}, signal={index}"
+                        );
+                    }
+                }
+                prior = deviations;
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_variation_is_rejected_before_generation() {
+        let route = route();
+        for value in [f64::NAN, f64::INFINITY, -0.1, 5.01] {
+            assert!(generate_with_variation(&route, 800, 7, value).is_err());
+        }
+    }
 }

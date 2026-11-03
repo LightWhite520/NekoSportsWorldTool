@@ -5,24 +5,15 @@ use super::{
 };
 use route_planner::{noise::GpsJitter, Coord, Route};
 
-pub fn build(
-    route: &Route,
-    duration: i64,
-    seed: u64,
-    start_ms: i64,
-    fences: &[Vec<Coord>],
-) -> Result<Track, String> {
-    build_inner(route, duration, seed, start_ms, fences, false)
-}
-
 pub fn build_regular(
     route: &Route, duration: i64, seed: u64, start_ms: i64, fences: &[Vec<Coord>],
 ) -> Result<Track, String> {
-    build_inner(route, duration, seed, start_ms, fences, true)
+    build_with_variation(route, duration, seed, start_ms, fences, true, 1.0)
 }
 
-fn build_inner(
+pub fn build_with_variation(
     route: &Route, duration: i64, seed: u64, start_ms: i64, fences: &[Vec<Coord>], regular: bool,
+    variation: f64,
 ) -> Result<Track, String> {
     if start_ms
         .checked_add(duration.saturating_mul(1000))
@@ -30,7 +21,7 @@ fn build_inner(
     {
         return Err("开始时间超出范围".into());
     }
-    let samples = route_planner::motion::generate(route, duration, seed)?;
+    let samples = route_planner::motion::generate_with_variation(route, duration, seed, variation)?;
     let mut observation = Rng::new(seed ^ 0xa0761d6478bd642f);
     let mut elevation = super::altitude::SyntheticAltitude::new(seed);
     let mut jitter = GpsJitter::new(0.92, 0.15, 0.08);

@@ -15,6 +15,13 @@ pub fn build(
     start_ms: i64,
     points_bd: &[(f64, f64)],
 ) -> Result<Track, String> {
+    build_with_variation(dist, dur, seed, _center, start_ms, points_bd, 1.0)
+}
+
+pub fn build_with_variation(
+    dist: f64, dur: i64, seed: u64, _center: (f64, f64), start_ms: i64,
+    points_bd: &[(f64, f64)], variation: f64,
+) -> Result<Track, String> {
     if points_bd.len() < 2
         || points_bd
             .iter()
@@ -32,5 +39,5 @@ pub fn build(
         .collect();
     coords.push(coords[0]);
     let route = Itinerary::looping(polyline(&coords)?).expand(dist)?;
-    super::motion::build(&route, dur, seed, start_ms, &[])
+    super::motion::build_with_variation(&route, dur, seed, start_ms, &[], false, variation)
 }

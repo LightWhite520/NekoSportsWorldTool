@@ -7,6 +7,49 @@ use super::geom::wgs84_to_bd09;
 mod fixture;
 
 #[test]
+fn shared_variation_reaches_every_route_mode_without_changing_altitude_or_totals() {
+    let (mut net, points) = fixture::stadium();
+    let points: Vec<_> = points.into_iter().map(|(a, b)| wgs84_to_bd09(a, b)).collect();
+    let mut outline: Vec<_> = net.graph.node_weights().map(|n| {
+        let (lat, lon) = wgs84_to_bd09(n.coord.lat, n.coord.lon);
+        route_planner::Coord::new(lon, lat)
+    }).collect();
+    outline.push(outline[0]);
+    let candidate = route_planner::athletics::TrackCandidate {
+        id: "synthetic-variation".into(), source: "manual".into(),
+        counterclockwise_allowed: true, points: outline,
+    };
+    align_network(&mut net);
+    for mode in 0..4 {
+        let build = |variation| match mode {
+            0 => super::generator::build_with_variation(2110., 900, 7, points[0], 123000, &points, variation),
+            1 | 2 => super::generate_road::build_road_with_variation(
+                2110., 900, 7, 123000, &points, &points, &net, mode == 2, variation,
+            ),
+            _ => super::generate_road::build_track_with_variation(
+                &net, &points, 2110., 900, 7, 123000, &candidate, variation,
+            ),
+        };
+        let baseline = build(1.0).unwrap();
+        for variation in [0.0, 2.0, 5.0] {
+            let track = build(variation).unwrap();
+            track.validate_consistency().unwrap();
+            assert!((track.totalDistance - 2110.).abs() < 0.01);
+            assert_eq!(track.totalTime, 900);
+            assert_eq!(track.startTime, baseline.startTime);
+            assert!(track.locations.iter().zip(&baseline.locations).any(|(a, b)| a.speed != b.speed));
+            for (point, original) in track.locations.iter().zip(&baseline.locations) {
+                assert_eq!(point.bdA, original.bdA);
+            }
+            assert!(points.iter().all(|&p| super::wire::passes_point(&track, p)));
+            let review = super::review::RunReview::from_track(&track).unwrap();
+            assert_eq!(review.steps, track.totalSteps);
+            assert_eq!(review.route.len(), track.locations.len());
+        }
+    }
+}
+
+#[test]
 fn offline_comparison() {
     let (net, points) = fixture::stadium();
     let road = build_road(2110.0, 900, 7, 0, &points, &points, &net).unwrap();
