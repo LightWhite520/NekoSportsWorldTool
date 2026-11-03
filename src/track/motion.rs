@@ -32,10 +32,9 @@ fn build_inner(
     }
     let samples = route_planner::motion::generate(route, duration, seed)?;
     let mut observation = Rng::new(seed ^ 0xa0761d6478bd642f);
-    let mut elevation = Rng::new(seed ^ 0xe7037ed1a0b428db);
+    let mut elevation = super::altitude::SyntheticAltitude::new(seed);
     let mut jitter = GpsJitter::new(0.92, 0.15, 0.08);
     let mut track_drift = super::track_drift::TrackDrift::new(seed);
-    let mut altitude = 82.;
     let mut locs = Vec::with_capacity(samples.len() + 1);
     for (i, sample) in samples.iter().enumerate() {
         let c = route_planner::itinerary::at(route, sample.distance);
@@ -60,7 +59,7 @@ fn build_inner(
             c
         };
         // This is a synthetic altitude process, not measured terrain.
-        altitude += 0.01 * (82. - altitude) + elevation.gauss(0., 0.015);
+        let altitude = elevation.step();
         let prior = if i > 0 { &samples[i - 1] } else { sample };
         let distance = sample.distance - prior.distance;
         let next = route_planner::itinerary::at(route, (sample.distance + 1.).min(route.length_m));

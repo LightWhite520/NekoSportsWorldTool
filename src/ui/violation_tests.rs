@@ -179,7 +179,9 @@ fn active_submission_button_cannot_start_a_second_task() {
             frame(&mut app, &ctx, 880., 900., vec![]);
         }
         let output = frame(&mut app, &ctx, 880., 900., vec![]);
-        let at = label_position(&output, "提交中…").unwrap();
+        assert!(label_position(&output, "生成数据并预览").is_none());
+        assert!(label_position(&output, "确认提交这份数据").is_none());
+        let at = label_position(&output, "existing submission").unwrap();
         click(&mut app, &ctx, 880., 900., at);
     }
     assert!(app.run_busy);

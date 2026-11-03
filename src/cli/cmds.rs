@@ -14,6 +14,14 @@ pub fn dispatch(args: Vec<String>) -> i32 {
         "location" => cmd_location(&rest),
         "run" => cmd_run(&rest),
         "motion-check" => super::motion_check::run(&rest),
+        #[cfg(all(feature = "gui", not(target_os = "android")))]
+        "preview-demo" => {
+            let flags = parse_flags(&rest);
+            match crate::ui::run_review_demo::run(get(&flags, "capture-dir").map(std::path::PathBuf::from)) {
+                Ok(()) => 0,
+                Err(e) => { eprintln!("离线预览失败：{e}"); 1 }
+            }
+        }
         "template" => cmd_template(&rest),
         "ai" => cmd_ai(&rest),
         "ai-list" => cmd_ai_list(),
@@ -224,7 +232,10 @@ fn cmd_run(rest: &[&str]) -> i32 {
         seed,
         route_mode,
     };
-    match crate::api::flow::run_full_flow(&mut client, &params, &mut log) {
+    match crate::api::flow::run_reviewed_flow_cancellable(
+        &mut client, &params, &mut log, &crate::task_control::Control::default(),
+        &mut super::run_review::confirm,
+    ) {
         Ok(out) => {
             println!(
                 "记录提交成功 rrid={} uuid={}；OBS 上传={}/2；详情读取={}；服务端达标判定={}",
@@ -241,7 +252,8 @@ fn cmd_run(rest: &[&str]) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("跑步提交失败: {e}");
+            if e == crate::api::flow::RUN_CANCELLED { println!("{e}"); return 0; }
+            eprintln!("跑步任务失败: {e}");
             1
         }
     }

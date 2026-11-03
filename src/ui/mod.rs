@@ -29,6 +29,9 @@ mod preview_jobs;
 pub mod records;
 mod road_tools;
 pub mod run;
+mod run_review;
+#[cfg(not(target_os = "android"))]
+pub(crate) mod run_review_demo;
 pub mod theme;
 mod track_editor;
 pub mod user;
@@ -144,6 +147,9 @@ pub struct App {
     preview_tx: Sender<preview_jobs::PreviewResult>,
     preview_rx: Receiver<preview_jobs::PreviewResult>,
     run_control: Arc<crate::task_control::Control>,
+    run_review_tx: Sender<run_review::Request>,
+    run_review_rx: Receiver<run_review::Request>,
+    run_review: Option<run_review::Request>,
 }
 
 impl eframe::App for App {
@@ -406,6 +412,7 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let (net_tx, net_rx) = std::sync::mpsc::channel();
         let (preview_tx, preview_rx) = std::sync::mpsc::channel();
+        let (run_review_tx, run_review_rx) = std::sync::mpsc::channel();
         let font_loaded = fonts::install(ctx);
         theme::apply(ctx);
         let device_buf = identity.clone();
@@ -493,6 +500,9 @@ impl App {
             preview_tx,
             preview_rx,
             run_control: Arc::new(crate::task_control::Control::default()),
+            run_review_tx,
+            run_review_rx,
+            run_review: None,
         }
     }
 
@@ -581,6 +591,8 @@ impl App {
     }
 
     fn renew_session_jobs(&mut self) {
+        self.run_control.cancel();
+        self.run_review = None;
         self.data_page.cheat = None;
         self.data_page.cheat_error = None;
         self.data_page.cheat_checking = false;

@@ -192,6 +192,31 @@ mod validation_tests {
         assert!(laps.iter().all(|lap| lap["endAltAbs"] == 36.75));
         assert!(laps.iter().all(|lap| lap["endAltRel"] == 0.0));
     }
+
+    #[test]
+    fn range_altitude_matches_encoded_points_and_total_ascent() {
+        use crate::track::altitude::{override_bd_a_range, AltitudeRange};
+        use std::io::Read;
+        let mut track = crate::track::generator::build(
+            2200.0, 900, 7, (30.0, 10.0), 0,
+            &[(30.0, 10.0), (30.001, 10.001)],
+        ).unwrap();
+        override_bd_a_range(&mut track, AltitudeRange { min_m: 11.6, max_m: 22.8 }).unwrap();
+        let laps = build_laps(&track, 0);
+        let lap_ascent: f64 = laps.iter().map(|lap| lap["elevationGain"].as_f64().unwrap()).sum();
+        let ascent = crate::api::submit::total_ascent(&track.locations);
+        assert!(ascent > 0.0);
+        assert!((lap_ascent - ascent).abs() <= laps.len() as f64 * 0.005 + 1e-9);
+        let obs = build_obs_object(&track, 1, "synthetic", 1, "{}");
+        let bytes = crate::crypto::envelope::b64_decode(obs["run_data"].as_str().unwrap()).unwrap();
+        let mut decoded = String::new();
+        flate2::read::GzDecoder::new(&bytes[..]).read_to_string(&mut decoded).unwrap();
+        let wrapper: Value = serde_json::from_str(&decoded).unwrap();
+        let points: Vec<Value> = serde_json::from_str(wrapper["allLocJson"].as_str().unwrap()).unwrap();
+        for (point, source) in points.iter().zip(&track.locations) {
+            assert_eq!(point["bdA"], source.bdA);
+        }
+    }
 }
 
 /// 10s 时间窗，id=(rrid%100000)*1000+窗口序秒（6 个真人样本跨 9 月记录验证一致；

@@ -7,6 +7,8 @@ mod route_refresh_tests;
 mod violation_tests;
 #[path = "login_backup_tests.rs"]
 mod login_backup_tests;
+#[path = "run_review_tests.rs"]
+mod run_review_tests;
 
 fn frame(
     app: &mut App,

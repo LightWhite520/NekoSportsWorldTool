@@ -1,4 +1,4 @@
-//! 全链编排：policy → 实时点位 → 轨迹生成 → 提交 → OBS → 详情验证。
+//! 全链编排：policy → 实时点位 → 轨迹生成 → 用户预览确认 → 提交 → OBS → 详情验证。
 //! 由 UI 后台线程调用，log 闭包回传日志。
 
 use super::client::ApiClient;
@@ -88,25 +88,16 @@ fn sleep_secs(s: u64) {
     std::thread::sleep(std::time::Duration::from_secs(s));
 }
 
-/// 跑步全链。
-pub fn run_full_flow(
-    client: &mut ApiClient,
-    params: &RunParams,
-    log: &mut dyn FnMut(&str),
-) -> Result<RunOutcome, String> {
-    run_full_flow_cancellable(
-        client,
-        params,
-        log,
-        &crate::task_control::Control::default(),
-    )
-}
+pub const RUN_CANCELLED: &str = "已取消，未提交跑步记录";
 
-pub fn run_full_flow_cancellable(
+/// The reviewer sees the exact final Track. No submit or OBS upload is possible
+/// until it explicitly accepts; the track is never regenerated afterwards.
+pub fn run_reviewed_flow_cancellable(
     client: &mut ApiClient,
     params: &RunParams,
     log: &mut dyn FnMut(&str),
     control: &crate::task_control::Control,
+    review: &mut dyn FnMut(&crate::track::model::Track) -> Result<bool, String>,
 ) -> Result<RunOutcome, String> {
     control.check()?;
     if !params.dist.is_finite() || params.dist <= 0.0 || params.dur <= 0 {
@@ -285,9 +276,6 @@ pub fn run_full_flow_cancellable(
     }
     let five = five_point_wrapper(&pts, &track, &fences.area);
 
-    // ⑤ 提交（sportType=1）
-    control.begin_submit()?;
-    log("[record] 提交跑步记录（已进入提交，不能撤回）…");
     let sp = SubmitParams {
         track,
         uid: sess.uid,
@@ -300,6 +288,11 @@ pub fn run_full_flow_cancellable(
         five_point_json: five,
         address: client.identity.city.clone(),
     };
+    // ⑤ Freeze the final data and wait for an explicit decision.
+    log("[preview] 数据已生成，等待查看并确认提交");
+    confirm_run(&sp.track, control, review)?;
+    client.ensure_session_valid()?;
+    log("[record] 提交跑步记录（已进入提交，不能撤回）…");
     let result = submit_record(client, &sp, log)?;
     sleep_secs(1);
 
@@ -345,6 +338,16 @@ pub fn run_full_flow_cancellable(
         obs_ok,
         verification,
     })
+}
+
+fn confirm_run(
+    track: &crate::track::model::Track,
+    control: &crate::task_control::Control,
+    review: &mut dyn FnMut(&crate::track::model::Track) -> Result<bool, String>,
+) -> Result<(), String> {
+    control.check()?;
+    if !review(track)? { return Err(RUN_CANCELLED.into()); }
+    control.begin_submit()
 }
 
 /// AI 提交流（UI 线程用）。
@@ -405,6 +408,40 @@ pub fn run_records(
 mod verification_tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn final_track_requires_explicit_review_and_is_not_regenerated() {
+        let track = crate::track::generator::build(1200.0, 600, 7, (30.0, 10.0), 123000,
+            &[(30.0, 10.0), (30.001, 10.001)]).unwrap();
+        let original = serde_json::to_string(&track).unwrap();
+        let control = crate::task_control::Control::default();
+        let mut seen = false;
+        assert_eq!(confirm_run(&track, &control, &mut |shown| {
+            seen = true;
+            assert!(std::ptr::eq(shown, &track));
+            assert_eq!(serde_json::to_string(shown).unwrap(), original);
+            Ok(false)
+        }).unwrap_err(), RUN_CANCELLED);
+        assert!(seen);
+        assert!(control.cancellable());
+        assert!(confirm_run(&track, &control, &mut |_| Ok(true)).is_ok());
+        assert!(!control.cancellable());
+        // Even a repeated approval cannot enter submission a second time.
+        assert!(confirm_run(&track, &control, &mut |_| Ok(true)).is_err());
+        assert_eq!(serde_json::to_string(&track).unwrap(), original);
+    }
+
+    #[test]
+    fn cancelling_during_review_or_losing_the_reviewer_never_starts_submission() {
+        let track = crate::track::generator::build(1200.0, 600, 7, (30.0, 10.0), 0,
+            &[(30.0, 10.0), (30.001, 10.001)]).unwrap();
+        let control = crate::task_control::Control::default();
+        assert!(confirm_run(&track, &control, &mut |_| {
+            control.cancel(); Ok(true)
+        }).is_err());
+        let control = crate::task_control::Control::default();
+        assert!(confirm_run(&track, &control, &mut |_| Err("preview closed".into())).is_err());
+        assert!(control.cancellable());
+    }
     #[test]
     fn reading_a_detail_is_not_a_successful_grade() {
         let failed = Verification::from_result(Ok(json!({"complete": false})));

@@ -1,11 +1,12 @@
 //! 命令行入口：子命令分发 + 共享助手。
 //! 子命令实现见 ；数据文件与 GUI 共用（exe 同目录）。
 //!
-//! 青龙定时任务：首次 `login --user .. --pass .. --remember`，之后定时 `run`
-//! 即可（会话失效且已记住凭据时自动重登）。
+//! 首次 `login --user .. --pass .. --remember` 后可执行 `run`。
+//! 跑步数据生成后需要查看预览并明确确认，旧定时脚本不会再自动提交。
 
 mod cmds;
 mod motion_check;
+mod run_review;
 
 use crate::api::client::ApiClient;
 use crate::api::model::{self, Session};
@@ -24,9 +25,10 @@ fn usage() {
   logout                                   登出并清理本地会话
   location [--save --city <城市>]           获取系统定位；默认只显示，--save 保存到设备身份
   run    [--dist km] [--pace 秒/km] [--altitude 米或min-max] [--ago 分钟] [--days-ago 0-3 --time HH:MM] [--face 0|1] [--seed n] [--route legacy|road|track] [--track ID|off]
-                                           跑步全链：策略-点位-轨迹-提交-OBS-验证（--route 选择路线算法）
+                                           生成路线和数据预览；输入 submit 后提交（--route 选择路线算法）
   motion-check [--map file.osm] [--candidate ID] [--distance 米] [--duration 秒] [--seed n] [--timeline]
                                            离线列出跑道候选或检查运动约束，不读取账号配置
+  preview-demo [--capture-dir 目录]         打开纯离线合成数据预览（桌面 GUI 构建），可保存预览截图
   template --file <GPX/JSON>                本地读取真实记录，分析海拔（不会上传）
   ai-list                                  AI 运动项目列表
   ai     --sport <id> [--mode min|count] [--score n]

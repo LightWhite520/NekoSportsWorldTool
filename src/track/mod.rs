@@ -7,6 +7,7 @@ pub mod generate_road;
 pub mod generator;
 pub mod geom;
 pub mod model;
+pub mod review;
 pub mod motion;
 mod track_drift;
 #[cfg(test)]

@@ -10,6 +10,8 @@ use chrono::TimeZone;
 
 impl App {
     fn expire_road_session(&mut self) {
+        self.run_control.cancel();
+        self.run_review = None;
         self.session_epoch = self.session_epoch.wrapping_add(1);
         self.auth_guard
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -79,6 +81,7 @@ impl App {
 
     pub(crate) fn poll_messages(&mut self) {
         self.poll_preview_results();
+        self.poll_run_reviews();
         let mut done_ip = None;
         let mut done_login = None;
         let mut done_run = None;
@@ -364,8 +367,11 @@ impl App {
         }
         if let Some(v) = done_run {
             self.run_busy = false;
+            self.run_review = None;
             let val: serde_json::Value = serde_json::from_str(&v).unwrap_or_default();
-            if val.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
+            if val["cancelled"] == true {
+                self.status = crate::api::flow::RUN_CANCELLED.into();
+            } else if val.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
                 self.status = format!(
                     "跑步提交成功 rrid={}（OBS {}/2）",
                     val["rrid"].as_i64().unwrap_or(0),

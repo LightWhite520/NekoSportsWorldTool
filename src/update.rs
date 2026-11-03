@@ -1,15 +1,12 @@
 //! 自动更新：GitHub Release 检查 / 下载 / 解包 / 自替换。
 //!
-//! 桌面产物（win zip / mac tar.gz / linux tar.gz ×2）只查上游仓库；
-//! Android 查上游 + fork 两个仓库（上游发 APK 前先落在 fork，发了则
-//! 自动取更新的那个），取带 APK 资产且版本最新的 Release。
+//! 各平台均从本项目发布仓库查询与当前平台匹配的 Release 产物。
 //! NSWT_UPDATE_REPO 环境变量可强制指定仓库（测试用）。
 //! 版本号 / 重启 / 安装的平台差异见 platform.rs。
 
 use crate::api::client::{make_agent, ureq_err};
 
-pub const REPO_UPSTREAM: &str = "YanamiNeko/NekoSportsWorldTool";
-pub const REPO_FORK: &str = "hb-degithub/NekoSportsWorldTool";
+pub const REPO_RELEASES: &str = "LightWhite520/NekoSportsWorldTool";
 
 const UA: &str = concat!("NekoSportsWorldTool/", env!("CARGO_PKG_VERSION"));
 
@@ -23,11 +20,7 @@ fn repos() -> Vec<String> {
             return vec![r.trim().to_string()];
         }
     }
-    #[cfg(target_os = "android")]
-    let list = [REPO_UPSTREAM, REPO_FORK];
-    #[cfg(not(target_os = "android"))]
-    let list = [REPO_UPSTREAM];
-    list.iter().map(|s| s.to_string()).collect()
+    vec![REPO_RELEASES.to_string()]
 }
 
 /// 当前平台对应的 Release 资产名；无匹配产物的平台返回 None。
@@ -65,7 +58,7 @@ pub struct ReleaseInfo {
 }
 
 /// 检查最新 Release；比当前新返回 Some，已是最新返回 None。
-/// 多仓库（Android）时取带资产且版本最新的候选。
+/// 只接受包含当前平台资产的 Release。
 pub fn check_latest(log: &mut dyn FnMut(&str)) -> Result<Option<ReleaseInfo>, String> {
     let want = asset_name().ok_or_else(|| "当前平台没有对应的发布产物，无法自动更新".to_string())?;
     let current = current_version();

@@ -281,6 +281,7 @@ impl RunPage {
 impl App {
     pub fn draw_run(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
+            .id_salt(("run_page", self.run_review.is_some(), std::sync::Arc::as_ptr(&self.run_control) as usize))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 self.draw_run_content(ui);
@@ -288,6 +289,19 @@ impl App {
     }
 
     fn draw_run_content(&mut self, ui: &mut egui::Ui) {
+        if self.run_review.is_some() {
+            self.draw_run_review(ui);
+            return;
+        }
+        if self.run_busy {
+            ui.spinner();
+            ui.label(&self.status);
+            if self.run_control.cancellable() && ui.button("取消准备/轨迹生成").clicked() {
+                self.run_control.cancel();
+                self.status = "已请求取消，等待当前任务结束…".into();
+            }
+            return;
+        }
         let prev_route = self.run_page.route_mode;
         {
             let page = &mut self.run_page;
@@ -484,7 +498,7 @@ impl App {
         let btn = if self.run_busy {
             theme::primary_btn("提交中…")
         } else {
-            theme::primary_btn("开始跑步")
+            theme::primary_btn("生成数据并预览")
         };
         mobile::row(ui, |ui| {
             if ui.add_enabled(enabled, btn).clicked() {
@@ -996,9 +1010,12 @@ impl App {
             None
         };
         self.run_busy = true;
+        self.run_review = None;
         self.run_control = std::sync::Arc::new(crate::task_control::Control::default());
         let control = self.run_control.clone();
-        self.status = "跑步提交中…".into();
+        let review_tx = self.run_review_tx.clone();
+        let epoch = self.session_epoch;
+        self.status = "正在生成预览数据…".into();
         let seed = plan.seed;
         self.spawn_job(move |tx| {
             let mut log = App::logger(tx.clone());
@@ -1014,7 +1031,7 @@ impl App {
                 seed,
                 route_mode,
             };
-            let payload = match crate::api::flow::run_full_flow_cancellable(
+            let payload = match crate::api::flow::run_reviewed_flow_cancellable(
                 &mut client,
                 &params,
                 &mut |s| {
@@ -1024,6 +1041,15 @@ impl App {
                     log(s);
                 },
                 &control,
+                &mut |track| {
+                    let data = crate::track::review::RunReview::from_track(track)?;
+                    let (decision, response) = std::sync::mpsc::channel();
+                    if review_tx.send(super::run_review::Request {
+                        epoch, control: control.clone(), data, decision,
+                        map: MapState::default(), map_size: egui::Vec2::ZERO,
+                    }).is_err() { return Ok(false); }
+                    super::run_review::wait_for_decision(response, &control)
+                },
             ) {
                 Ok(out) => {
                     log(&format!(
@@ -1044,8 +1070,10 @@ impl App {
                     })
                 }
                 Err(e) => {
-                    log(&format!("跑步提交失败: {e}"));
-                    serde_json::json!({ "ok": false, "message": crate::road_status::explain(&e) })
+                    let cancelled = control.check().is_err() || e == crate::api::flow::RUN_CANCELLED;
+                    if cancelled { log(crate::api::flow::RUN_CANCELLED); }
+                    else { log(&format!("跑步任务失败: {e}")); }
+                    serde_json::json!({ "ok": false, "cancelled": cancelled, "message": crate::road_status::explain(&e) })
                 }
             };
             tx.send(format!("__RUN_DONE__{payload}")).ok();
