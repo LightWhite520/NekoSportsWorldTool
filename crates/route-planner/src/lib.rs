@@ -18,6 +18,7 @@ pub mod gpx;
 pub mod graph;
 pub mod itinerary;
 pub mod kinematics;
+pub mod lanes;
 pub mod load;
 pub mod motion;
 pub mod noise;

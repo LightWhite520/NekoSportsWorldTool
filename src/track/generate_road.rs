@@ -137,14 +137,18 @@ pub fn plan_road_view_for_mode(
     g = apply_fences(&g, fences);
     let ordered = points_bd.to_vec();
     let route = required_route(&g, &ordered, dist, dur, seed)?;
-    route_planner::motion::generate(
-        &route_planner::itinerary::Itinerary::looping(route.clone()).expand(dist)?,
-        dur,
-        seed,
-    )?;
+    if mode != RouteMode::Track {
+        route_planner::motion::generate(
+            &route_planner::itinerary::Itinerary::looping(route.clone()).expand(dist)?,
+            dur,
+            seed,
+        )?;
+    }
+    let mut laps = super::route_view::laps(&route, dist);
     let (route_pts, arcs, length_m) = if mode == RouteMode::Track {
-        let expanded = route_planner::itinerary::Itinerary::looping(route.clone()).expand(dist)?;
-        let track = super::motion::build_regular(&expanded, dur, seed, 0, &g.boundaries)?;
+        let journey = regular_journey(&route, dist, seed, &g)?;
+        laps = journey.laps;
+        let track = super::motion::build_regular(&journey.route, dur, seed, 0, &g.boundaries)?;
         (
             track.locations.iter().map(|p| (p.gLat, p.gLng)).collect(),
             track.locations.iter().map(|p| p.totalDis).collect(),
@@ -169,7 +173,7 @@ pub fn plan_road_view_for_mode(
         circuit_m: route.length_m,
         track_mode: false,
         arcs,
-        laps: super::route_view::laps(&route, dist),
+        laps,
         route: route_pts,
         length_m,
         edges,
@@ -325,7 +329,11 @@ pub fn build_road_with_variation(
         }
     }
     let route = required_route(net, &required, dist, dur, seed)?;
-    let expanded = route_planner::itinerary::Itinerary::looping(route).expand(dist)?;
+    let expanded = if regular {
+        regular_journey(&route, dist, seed, net)?.route
+    } else {
+        route_planner::itinerary::Itinerary::looping(route).expand(dist)?
+    };
     let track = super::motion::build_with_variation(
         &expanded, dur, seed, start_ms, &net.boundaries, regular, variation, drift_variation,
     )?;
@@ -597,6 +605,11 @@ pub fn track_itinerary(
         dist,
     )
 }
+
+pub(super) fn regular_journey(route: &Route, distance: f64, seed: u64, net: &RoadGraph) -> Result<route_planner::lanes::Plan, String> {
+    route_planner::lanes::plan(&route_planner::itinerary::Itinerary::looping(route.clone()), distance, seed, &net.boundaries)
+}
+
 pub fn plan_track_view(
     net: &RoadGraph,
     points: &[(f64, f64)],
@@ -613,23 +626,16 @@ pub fn plan_track_view(
     align_network(&mut aligned);
     let g = apply_fences(&aligned, fences);
     let itinerary = track_itinerary(&g, points, dist, candidate)?;
-    let route = itinerary.expand(dist)?;
-    let track = super::motion::build_regular(&route, dur, seed, 0, &g.boundaries)?;
-    let mut laps = Vec::new();
-    let mut remaining = dist - itinerary.prefix.length_m;
-    while remaining > 1e-6 {
-        let d = remaining.min(itinerary.circuit.length_m);
-        laps.push(d);
-        remaining -= d;
-    }
+    let journey = route_planner::lanes::plan(&itinerary, dist, seed, &g.boundaries)?;
+    let track = super::motion::build_regular(&journey.route, dur, seed, 0, &g.boundaries)?;
     Ok(RoadPlan {
-        prefix_m: itinerary.prefix.length_m,
+        prefix_m: journey.prefix_m,
         circuit_m: itinerary.circuit.length_m,
         track_mode: true,
         arcs: track.locations.iter().map(|p| p.totalDis).collect(),
         route: track.locations.iter().map(|p| (p.gLat, p.gLng)).collect(),
         length_m: track.totalDistance,
-        laps,
+        laps: journey.laps,
         edges: g
             .edges_deg()
             .iter()
@@ -660,7 +666,8 @@ pub fn build_track_with_variation(
     net: &RoadGraph, points: &[(f64, f64)], dist: f64, dur: i64, seed: u64, start_ms: i64,
     candidate: &route_planner::athletics::TrackCandidate, variation: f64, drift_variation: f64,
 ) -> Result<Track, String> {
-    let route = track_itinerary(net, points, dist, candidate)?.expand(dist)?;
+    let itinerary = track_itinerary(net, points, dist, candidate)?;
+    let route = route_planner::lanes::expand(&itinerary, dist, seed, &net.boundaries)?;
     let track = super::motion::build_with_variation(
         &route, dur, seed, start_ms, &net.boundaries, true, variation, drift_variation,
     )?;

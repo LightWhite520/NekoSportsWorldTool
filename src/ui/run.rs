@@ -439,7 +439,7 @@ impl App {
                 }
             });
             if page.route_mode == RouteMode::Track {
-                ui.label("用于操场绕圈，请确认预览路线位于跑道内；预览包含实际生成的轨迹。");
+                ui.label("闭环跑道按标准单道宽 1.22 米，在相邻道间平滑换道。请核对预览位于跑道内。");
             }
         }
 
@@ -665,7 +665,7 @@ impl App {
         if let Some(p) = &self.run_page.preview {
             if p.track_mode {
                 ui.label(format!(
-                    "连接段 {:.1} 米 · 跑道 {:.1} 米 · 逆时针 {} 圈（含末段）",
+                    "连接段 {:.1} 米 · 参考线圈长 {:.1} 米 · 逆时针 {} 圈（含末段）",
                     p.prefix_m,
                     p.circuit_m,
                     p.laps.len()
@@ -1116,7 +1116,7 @@ pub(super) fn draw_drift_variation(ui: &mut egui::Ui, variation: &mut f32) {
         mobile::drag_f32(ui, "run_drift_variation", variation, 0.0..=5.0, 0.1, 1, " 倍");
         if ui.small_button("恢复默认漂移").clicked() { *variation = 1.0; }
     });
-    ui.label("独立控制路线漂移；0 关闭，1 为默认幅度。漂移连续变化，并受围栏限制。");
+    ui.label("独立控制 GPS 漂移；0 关闭，1 为默认幅度。漂移受围栏限制，跑道换道单独计算。");
 }
 
 #[cfg(test)]

@@ -4,18 +4,19 @@ use crate::track::review::RunReview;
 use eframe::egui;
 
 fn demo_data(variation: f64, drift_variation: f64) -> Result<RunReview, String> {
-    let points: Vec<_> = (0..=120)
-        .map(|i| {
-            let angle = i as f64 / 120.0 * std::f64::consts::TAU;
-            route_planner::Coord::new(
-                10.0 + 60.0 * angle.cos() / (111320.0 * 30_f64.to_radians().cos()),
-                30.0 + 60.0 * angle.sin() / 111132.0,
-            )
-        })
-        .collect();
-    let route =
-        route_planner::itinerary::Itinerary::looping(route_planner::itinerary::polyline(&points)?)
-            .expand(2090.0)?;
+    let mut points = Vec::new();
+    for (cy, first) in [(40.0, 0.0), (-40.0, std::f64::consts::PI)] {
+        for i in 0..=60 {
+            let angle = first + i as f64 / 60.0 * std::f64::consts::PI;
+            points.push(route_planner::Coord::new(
+                10.0 + 36.0 * angle.cos() / (111320.0 * 30_f64.to_radians().cos()),
+                30.0 + (cy + 36.0 * angle.sin()) / 111132.0,
+            ));
+        }
+    }
+    points.push(points[0]);
+    let trip = route_planner::itinerary::Itinerary::looping(route_planner::itinerary::polyline(&points)?);
+    let route = route_planner::lanes::expand(&trip, 2090.0, 7, &[])?;
     let mut track = crate::track::motion::build_with_variation(
         &route,
         840,
@@ -116,7 +117,7 @@ impl eframe::App for Demo {
             }
         }
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.label("离线合成数据示例 · 按钮仅演示，不会提交记录");
+            ui.label("离线合成跑道 · 单道宽 1.22 米 · 按钮仅演示，不会提交记录");
             let previous = (self.variation, self.drift_variation);
             super::run::draw_motion_variation(ui, &mut self.variation);
             super::run::draw_drift_variation(ui, &mut self.drift_variation);

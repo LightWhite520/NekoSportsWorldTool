@@ -56,10 +56,11 @@ fn offline_comparison() {
     let track = build_regular_road(2110.0, 900, 7, 0, &points, &points, &net).unwrap();
     road.validate_consistency().unwrap();
     track.validate_consistency().unwrap();
-    assert_eq!(road.totalSteps, track.totalSteps);
+    assert!((road.totalDistance - track.totalDistance).abs() < 0.01);
+    assert_eq!(road.totalTime, track.totalTime);
     assert_eq!(road.locations.len(), track.locations.len());
     for (a, b) in road.locations.iter().zip(&track.locations) {
-        assert_eq!((a.totalTime, a.totalDis, a.speed, a.steps), (b.totalTime, b.totalDis, b.speed, b.steps));
+        assert_eq!((a.totalTime, a.bdA), (b.totalTime, b.bdA));
     }
     if let Some(directory) = std::env::var_os("NEKO_TRACK_COMPARISON_DIR") {
         let directory = std::path::PathBuf::from(directory);
@@ -94,7 +95,14 @@ fn track_samples_follow_the_route_with_bounded_continuous_drift() {
     let baseline = plan_road_view(&net, &points, 2110., 900, 7, &[]).unwrap();
     let mut aligned = net;
     align_network(&mut aligned);
+    let circuit = route_planner::Route {
+        points: baseline.route.iter().zip(&baseline.arcs).map(|(&(lat,lon), &s)| route_planner::RoutePoint {
+            lat, lon, s, curvature: 0.0,
+        }).collect(),
+        length_m: baseline.length_m,
+    };
     for seed in 0..20 {
+        let journey = super::generate_road::regular_journey(&circuit,2110.,seed,&aligned).unwrap();
         let track = build_regular_road(2110., 900, seed, 123000, &points, &points, &aligned).unwrap();
         track.validate_consistency().unwrap();
         assert_eq!(track.locations.len(), 902);
@@ -103,8 +111,8 @@ fn track_samples_follow_the_route_with_bounded_continuous_drift() {
         assert_eq!(track.locations[1].ptype, 5);
         let mut previous_offset = (0., 0.);
         for (i, p) in track.locations.iter().enumerate() {
-            let expected =
-                super::route_view::position(&baseline.route, &baseline.arcs, p.totalDis).unwrap();
+            let c = route_planner::itinerary::at(&journey.route,p.totalDis);
+            let expected = (c.lat,c.lon);
             let delta = offset((p.gLat, p.gLng), expected);
             assert!(
                 delta.0.hypot(delta.1) <= 0.35,
@@ -226,8 +234,8 @@ fn confirmed_counterclockwise_track_uses_bounded_drift_and_exact_preview() {
     let mut aligned = net.clone();
     align_network(&mut aligned);
     let itinerary = track_itinerary(&aligned, &points, 2110., &candidate).unwrap();
-    let route = itinerary.expand(2110.).unwrap();
     for seed in 0..8 {
+        let route = route_planner::lanes::expand(&itinerary,2110.,seed,&[]).unwrap();
         let preview = plan_track_view(&net, &points, 2110., 900, seed, &[], &candidate).unwrap();
         let track = build_track(&aligned, &points, 2110., 900, seed, 123000, &candidate).unwrap();
         assert!(preview.track_mode);
