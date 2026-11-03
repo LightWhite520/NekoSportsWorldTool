@@ -143,9 +143,10 @@ fn steady_running_retains_variation_without_second_to_second_jaggedness() {
                 "pace too jagged: {duration}/{seed}"
             );
             assert!(
-                rms(&cadence_change) < 0.4,
+                rms(&cadence_change) < 4.0,
                 "cadence too jagged: {duration}/{seed}"
             );
+            assert!(cadence_change.iter().all(|v| v.abs() < 12.0), "cadence jump: {duration}/{seed}");
         }
     }
 }

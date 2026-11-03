@@ -22,12 +22,12 @@ fn shared_variation_reaches_every_route_mode_without_changing_altitude_or_totals
     align_network(&mut net);
     for mode in 0..4 {
         let build = |variation| match mode {
-            0 => super::generator::build_with_variation(2110., 900, 7, points[0], 123000, &points, variation),
+            0 => super::generator::build_with_variation(2110., 900, 7, points[0], 123000, &points, variation, 1.0),
             1 | 2 => super::generate_road::build_road_with_variation(
-                2110., 900, 7, 123000, &points, &points, &net, mode == 2, variation,
+                2110., 900, 7, 123000, &points, &points, &net, mode == 2, variation, 1.0,
             ),
             _ => super::generate_road::build_track_with_variation(
-                &net, &points, 2110., 900, 7, 123000, &candidate, variation,
+                &net, &points, 2110., 900, 7, 123000, &candidate, variation, 1.0,
             ),
         };
         let baseline = build(1.0).unwrap();

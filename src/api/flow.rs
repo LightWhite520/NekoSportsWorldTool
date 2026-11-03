@@ -28,6 +28,7 @@ pub struct RunParams {
     pub seed: u64,
     /// 配速、步频与派生步幅的统一随机波动强度，默认 1 倍。
     pub motion_variation: f64,
+    pub drift_variation: f64,
     /// 路线算法模式。
     pub route_mode: RouteMode,
     pub track_selection: Option<crate::track::selection::TrackSelection>,
@@ -103,6 +104,7 @@ pub fn run_reviewed_flow_cancellable(
 ) -> Result<RunOutcome, String> {
     control.check()?;
     route_planner::motion::validate_variation(params.motion_variation)?;
+    crate::track::motion::validate_drift_variation(params.drift_variation)?;
     if !params.dist.is_finite() || params.dist <= 0.0 || params.dur <= 0 {
         return Err("距离和时长必须为正数".into());
     }
@@ -218,6 +220,7 @@ pub fn run_reviewed_flow_cancellable(
                     start_ms,
                     &candidate,
                     params.motion_variation,
+                    params.drift_variation,
                 )?
             } else {
                 crate::track::generate_road::build_road_with_variation(
@@ -230,6 +233,7 @@ pub fn run_reviewed_flow_cancellable(
                     &filtered,
                     params.route_mode == RouteMode::Track,
                     params.motion_variation,
+                    params.drift_variation,
                 )
                 .map_err(|e| format!("道路路由失败：{e}；请修复路网或主动切换经典模式"))?
             }
@@ -242,6 +246,7 @@ pub fn run_reviewed_flow_cancellable(
             start_ms,
             &route_pts,
             params.motion_variation,
+            params.drift_variation,
         )?,
     };
     control.check()?;

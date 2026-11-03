@@ -462,6 +462,7 @@ impl App {
                 pace_min: config.pace_min,
                 pace_max: config.pace_max,
                 motion_variation: config.motion_variation,
+                drift_variation: config.drift_variation,
                 manual_altitude: config
                     .manual_altitude_range
                     .map(|r| format!("{}-{}", r.min_m, r.max_m))

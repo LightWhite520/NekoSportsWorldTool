@@ -24,11 +24,11 @@ fn usage() {
                                            登录并保存会话；--remember 同时保存凭据供自动重登
   logout                                   登出并清理本地会话
   location [--save --city <城市>]           获取系统定位；默认只显示，--save 保存到设备身份
-  run    [--dist km] [--pace 秒/km] [--variation 0-5] [--altitude 米或min-max] [--ago 分钟] [--days-ago 0-3 --time HH:MM] [--face 0|1] [--seed n] [--route legacy|road|track] [--track ID|off]
+  run    [--dist km] [--pace 秒/km] [--variation 0-5] [--drift 0-5] [--altitude 米或min-max] [--ago 分钟] [--days-ago 0-3 --time HH:MM] [--face 0|1] [--seed n] [--route legacy|road|track] [--track ID|off]
                                            生成路线和数据预览；输入 submit 后提交（--route 选择路线算法）
   motion-check [--map file.osm] [--candidate ID] [--distance 米] [--duration 秒] [--seed n] [--variation 0-5] [--timeline]
                                            离线列出跑道候选或检查运动约束，不读取账号配置
-  preview-demo [--capture-dir 目录] [--variation 0-5]
+  preview-demo [--capture-dir 目录] [--variation 0-5] [--drift 0-5]
                                            打开纯离线合成数据预览（桌面 GUI 构建），可保存预览截图
   template --file <GPX/JSON>                本地读取真实记录，分析海拔（不会上传）
   ai-list                                  AI 运动项目列表

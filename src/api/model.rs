@@ -61,9 +61,12 @@ pub struct Config {
     pub pace_min: f32,
     #[serde(default = "default_pace_max")]
     pub pace_max: f32,
-    /// 配速、步频与步幅共用的波动强度；0 关闭额外噪声，1 保留原有幅度。
+    /// 配速、步频与步幅共用的波动强度；0 关闭额外噪声，1 为默认强度。
     #[serde(default = "default_motion_variation")]
     pub motion_variation: f32,
+    /// 独立的路线漂移强度；0 关闭漂移，1 为默认幅度。
+    #[serde(default = "default_motion_variation")]
+    pub drift_variation: f32,
     #[serde(default)]
     pub face_check: bool,
     /// 跑步时覆盖轨迹点 bdA；为空表示使用生成器的海拔曲线。
@@ -139,6 +142,7 @@ impl Default for Config {
             pace_min: default_pace_min(),
             pace_max: default_pace_max(),
             motion_variation: default_motion_variation(),
+            drift_variation: default_motion_variation(),
             face_check: true,
             manual_altitude: None,
             manual_altitude_range: None,

@@ -21,8 +21,12 @@ pub fn dispatch(args: Vec<String>) -> i32 {
                 Ok(value) => value,
                 Err(_) => { eprintln!("--variation 必须为 0–5 倍的数值"); return 1; }
             };
+            let drift = match get(&flags, "drift").unwrap_or("1").parse::<f64>() {
+                Ok(value) => value,
+                Err(_) => { eprintln!("--drift 必须为 0–5 倍的数值"); return 1; }
+            };
             match crate::ui::run_review_demo::run(
-                get(&flags, "capture-dir").map(std::path::PathBuf::from), variation,
+                get(&flags, "capture-dir").map(std::path::PathBuf::from), variation, drift,
             ) {
                 Ok(()) => 0,
                 Err(e) => { eprintln!("离线预览失败：{e}"); 1 }
@@ -170,6 +174,16 @@ fn cmd_run(rest: &[&str]) -> i32 {
         },
         None => cfg.motion_variation as f64,
     };
+    let drift_variation = match get(&flags, "drift") {
+        Some(value) => match value.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => { eprintln!("--drift 必须为 0–5 倍的数值"); return 1; }
+        },
+        None => cfg.drift_variation as f64,
+    };
+    if let Err(e) = crate::track::motion::validate_drift_variation(drift_variation) {
+        eprintln!("{e}"); return 1;
+    }
     if let Err(e) = route_planner::motion::validate_variation(motion_variation) {
         eprintln!("{e}"); return 1;
     }
@@ -244,6 +258,7 @@ fn cmd_run(rest: &[&str]) -> i32 {
         start_ms,
         face_check: face as i64,
         motion_variation,
+        drift_variation,
         manual_altitude,
         manual_altitude_range,
         seed,

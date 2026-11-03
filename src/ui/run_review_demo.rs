@@ -3,7 +3,7 @@ use super::{map::MapState, run_review::draw_preview};
 use crate::track::review::RunReview;
 use eframe::egui;
 
-fn demo_data(variation: f64) -> Result<RunReview, String> {
+fn demo_data(variation: f64, drift_variation: f64) -> Result<RunReview, String> {
     let points: Vec<_> = (0..=120)
         .map(|i| {
             let angle = i as f64 / 120.0 * std::f64::consts::TAU;
@@ -24,6 +24,7 @@ fn demo_data(variation: f64) -> Result<RunReview, String> {
         &[],
         true,
         variation,
+        drift_variation,
     )?;
     crate::track::altitude::override_bd_a_range(
         &mut track,
@@ -35,8 +36,12 @@ fn demo_data(variation: f64) -> Result<RunReview, String> {
     RunReview::from_track(&track)
 }
 
-pub(crate) fn run(capture_dir: Option<std::path::PathBuf>, variation: f64) -> Result<(), String> {
-    let data = demo_data(variation)?;
+pub(crate) fn run(
+    capture_dir: Option<std::path::PathBuf>,
+    variation: f64,
+    drift_variation: f64,
+) -> Result<(), String> {
+    let data = demo_data(variation, drift_variation)?;
     if let Some(path) = &capture_dir {
         std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
         std::fs::write(
@@ -57,6 +62,7 @@ pub(crate) fn run(capture_dir: Option<std::path::PathBuf>, variation: f64) -> Re
             Ok(Box::new(Demo {
                 data,
                 variation: variation as f32,
+                drift_variation: drift_variation as f32,
                 map: MapState::default(),
                 map_size: egui::Vec2::ZERO,
                 capture_dir,
@@ -72,6 +78,7 @@ pub(crate) fn run(capture_dir: Option<std::path::PathBuf>, variation: f64) -> Re
 struct Demo {
     data: RunReview,
     variation: f32,
+    drift_variation: f32,
     map: MapState,
     map_size: egui::Vec2,
     capture_dir: Option<std::path::PathBuf>,
@@ -110,10 +117,11 @@ impl eframe::App for Demo {
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label("离线合成数据示例 · 按钮仅演示，不会提交记录");
-            let previous = self.variation;
+            let previous = (self.variation, self.drift_variation);
             super::run::draw_motion_variation(ui, &mut self.variation);
-            if previous != self.variation {
-                match demo_data(self.variation as f64) {
+            super::run::draw_drift_variation(ui, &mut self.drift_variation);
+            if previous != (self.variation, self.drift_variation) {
+                match demo_data(self.variation as f64, self.drift_variation as f64) {
                     Ok(data) => {
                         self.data = data;
                         self.map_size = egui::Vec2::ZERO;

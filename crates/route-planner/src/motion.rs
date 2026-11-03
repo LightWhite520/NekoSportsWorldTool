@@ -1,9 +1,11 @@
 //! Deterministic one-second integration. No distance is assigned after integration.
-use crate::{biomech::gait, Route};
+use crate::Route;
 use rand::{rngs::StdRng, SeedableRng};
 use rand_distr::{Distribution, StandardNormal};
 
-pub const VERSION: &str = "motion-v3";
+mod cadence;
+
+pub const VERSION: &str = "motion-v4";
 pub const MAX_SPEED: f64 = 6.3;
 pub const ACCEL: f64 = 0.65;
 pub const BRAKE: f64 = 1.0;
@@ -130,13 +132,16 @@ pub fn generate_with_variation(
         back.min(ahead).max(0.).sqrt().min(MAX_SPEED)
     };
     let simulate = |base: f64| {
+        // Recording begins during an easy jog. Keep the actual initial speed in
+        // the samples and integrate from it; do not edit the first pace afterwards.
+        let initial_speed = (base * 0.75).min(cap_at(0.0)).min(duration as f64 * BRAKE);
         let mut out = vec![Sample {
             time: 0,
             distance: 0.,
-            speed: 0.,
+            speed: initial_speed,
             steps: 0.,
         }];
-        let (mut s, mut v) = (0., 0.);
+        let (mut s, mut v) = (0., initial_speed);
         for t in 1..=duration {
             let target = (base * (1. + noise[t as usize - 1])).max(0.);
             let end_cap = (duration - t) as f64 * BRAKE;
@@ -174,13 +179,11 @@ pub fn generate_with_variation(
     if (result.last().unwrap().distance - route.length_m).abs() > 0.01 {
         return Err("运动约束求解未收敛，请调整时长".into());
     }
-    let mut cadence_rng = StdRng::seed_from_u64(seed ^ 0xc6a4a7935bd1e995);
-    let mut cadence_noise = SmoothNoise::new(10., 3., variation);
+    let mut cadence_model = cadence::Cadence::new(seed, variation);
     let mut steps = 0.;
     for i in 1..result.len() {
         let v = (result[i - 1].speed + result[i].speed) * 0.5;
-        let cad_noise = cadence_noise.step(&mut cadence_rng);
-        let cadence = (gait(v, 0.).cadence + cad_noise).clamp(80., 220.) * (v / 1.5).min(1.);
+        let cadence = cadence_model.step(result[i].time, v);
         steps += cadence / 60.;
         result[i].steps = steps;
     }
@@ -225,7 +228,7 @@ mod variation_tests {
     fn shared_variation_changes_all_three_signals_and_preserves_motion_constraints() {
         let route = route();
         for seed in [7, 23] {
-            let mut prior = [0.0; 3];
+            let mut default_deviations = [0.0; 3];
             for variation in [0.0, 1.0, 2.0, 5.0] {
                 let samples = generate_with_variation(&route, 800, seed, variation).unwrap();
                 assert!((samples.last().unwrap().distance - 2000.0).abs() < 0.01);
@@ -240,14 +243,20 @@ mod variation_tests {
                 for (index, deviation) in deviations.iter().enumerate() {
                     if variation == 0.0 {
                         assert!(*deviation < 1e-7);
-                    } else {
+                    } else if variation == 5.0 {
                         assert!(
-                            *deviation > prior[index] * 1.3,
+                            *deviation > default_deviations[index] * 1.3,
                             "seed={seed}, variation={variation}, signal={index}"
                         );
+                    } else {
+                        assert!(*deviation > 0.01);
                     }
                 }
-                prior = deviations;
+                // Rare excursions saturate at 30%, so overall variability is
+                // intentionally not a linear multiple of the strength slider.
+                if variation == 1.0 {
+                    default_deviations = deviations;
+                }
             }
         }
     }
@@ -257,6 +266,22 @@ mod variation_tests {
         let route = route();
         for value in [f64::NAN, f64::INFINITY, -0.1, 5.01] {
             assert!(generate_with_variation(&route, 800, 7, value).is_err());
+        }
+    }
+
+    #[test]
+    fn recording_starts_at_jogging_speed_without_overwriting_integrated_distance() {
+        let samples = generate(&route(), 800, 7).unwrap();
+        let cruising = samples[30].speed;
+        assert!(samples[0].speed >= cruising * 0.65);
+        assert!(samples[1].speed >= cruising * 0.85);
+        assert_eq!(samples[0].distance, 0.0);
+        assert_eq!(samples[0].steps, 0.0);
+        for pair in samples.windows(2) {
+            assert!(
+                (pair[1].distance - pair[0].distance - (pair[0].speed + pair[1].speed) * 0.5).abs()
+                    < 1e-8
+            );
         }
     }
 }

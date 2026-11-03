@@ -78,6 +78,7 @@ pub struct RunPage {
     pub pace_min: f32,
     pub pace_max: f32,
     pub motion_variation: f32,
+    pub drift_variation: f32,
     /// 手动绝对海拔（米）；空白表示使用生成器默认海拔。
     pub manual_altitude: String,
     /// 0=随机时刻 1=指定时刻
@@ -368,6 +369,7 @@ impl App {
                 });
             }
             draw_motion_variation(ui, &mut page.motion_variation);
+            draw_drift_variation(ui, &mut page.drift_variation);
             mobile::row(ui, |ui| {
                 ui.label("手动海拔（米/区间）：");
                 mobile::text_edit(
@@ -981,6 +983,11 @@ impl App {
         let face_check = if page.face_check { 1 } else { 0 };
         let route_mode = page.route_mode;
         let motion_variation = page.motion_variation as f64;
+        let drift_variation = page.drift_variation as f64;
+        if let Err(e) = crate::track::motion::validate_drift_variation(drift_variation) {
+            self.status = e;
+            return;
+        }
         if let Err(e) = route_planner::motion::validate_variation(motion_variation) {
             self.status = e;
             return;
@@ -990,6 +997,7 @@ impl App {
         self.config.pace_min = page.pace_min;
         self.config.pace_max = page.pace_max;
         self.config.motion_variation = page.motion_variation;
+        self.config.drift_variation = page.drift_variation;
         self.config.face_check = page.face_check;
         self.config.manual_altitude = manual_altitude;
         self.config.manual_altitude_range = manual_altitude_range;
@@ -1039,6 +1047,7 @@ impl App {
                 seed,
                 route_mode,
                 motion_variation,
+                drift_variation,
             };
             let payload = match crate::api::flow::run_reviewed_flow_cancellable(
                 &mut client,
@@ -1098,7 +1107,16 @@ pub(super) fn draw_motion_variation(ui: &mut egui::Ui, variation: &mut f32) {
             *variation = 1.0;
         }
     });
-    ui.label("配速、步频和步幅联动；1 倍保持原有效果，0 关闭额外随机波动，起停和转弯仍保留。");
+    ui.label("配速、步频和步幅联动；1 倍为默认强度，0 关闭额外随机波动，起停和转弯仍保留。");
+}
+
+pub(super) fn draw_drift_variation(ui: &mut egui::Ui, variation: &mut f32) {
+    mobile::row(ui, |ui| {
+        ui.label("路线漂移强度：");
+        mobile::drag_f32(ui, "run_drift_variation", variation, 0.0..=5.0, 0.1, 1, " 倍");
+        if ui.small_button("恢复默认漂移").clicked() { *variation = 1.0; }
+    });
+    ui.label("独立控制路线漂移；0 关闭，1 为默认幅度。漂移连续变化，并受围栏限制。");
 }
 
 #[cfg(test)]

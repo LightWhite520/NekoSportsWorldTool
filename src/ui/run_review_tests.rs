@@ -122,9 +122,15 @@ fn shared_variation_setting_restores_default_on_small_and_large_screens() {
         app.run_review = None;
         app.run_busy = false;
         app.run_page.motion_variation = 2.5;
+        app.run_page.drift_variation = 3.5;
         let position = scroll_to_label(&mut app, &ctx, width, height, "恢复默认强度");
         assert_eq!(app.run_page.motion_variation, 2.5);
         click(&mut app, &ctx, width, height, position);
+        assert_eq!(app.run_page.motion_variation, 1.0);
+        assert_eq!(app.run_page.drift_variation, 3.5);
+        let drift_position = scroll_to_label(&mut app, &ctx, width, height, "恢复默认漂移");
+        click(&mut app, &ctx, width, height, drift_position);
+        assert_eq!(app.run_page.drift_variation, 1.0);
         assert_eq!(app.run_page.motion_variation, 1.0);
         assert!(!app.run_busy);
         assert_eq!(app.active_jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -135,8 +141,10 @@ fn shared_variation_setting_restores_default_on_small_and_large_screens() {
 fn shared_variation_survives_config_roundtrip_and_older_configs_keep_original_default() {
     let old: Config = serde_json::from_str("{}").unwrap();
     assert_eq!(old.motion_variation, 1.0);
+    assert_eq!(old.drift_variation, 1.0);
     let config = Config {
         motion_variation: 2.5,
+        drift_variation: 3.5,
         ..old
     };
     let saved = serde_json::to_string(&config).unwrap();
@@ -149,4 +157,5 @@ fn shared_variation_survives_config_roundtrip_and_older_configs_keep_original_de
         restored,
     );
     assert_eq!(app.run_page.motion_variation, 2.5);
+    assert_eq!(app.run_page.drift_variation, 3.5);
 }

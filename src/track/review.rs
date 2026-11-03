@@ -116,7 +116,8 @@ mod tests {
                 track.locations.last().unwrap().gLng
             ))
         );
-        assert_eq!(review.pace[0].value, None);
+        assert!(review.pace[0].value.is_some());
+        assert_eq!(review.pace.last().unwrap().value, None);
         assert_eq!(format_pace(402.0), "6′42″");
         assert_eq!(review.cadence.last().unwrap().time_s, 603.0);
         assert_eq!(
