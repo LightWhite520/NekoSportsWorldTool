@@ -461,13 +461,26 @@ fn run_base_map_draws_real_roads_and_buildings_without_route_metadata() {
                 if roads && buildings {
                     break;
                 }
+                // Scroll above the canvas; wheel input inside it belongs to zoom.
+                let scroll_y = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| {
+                        if let egui::Shape::Rect(rect) = &shape.shape {
+                            if rect.fill == egui::Color32::from_rgb(250, 252, 251) {
+                                return Some((rect.rect.top() - 10.).min(h - 55.));
+                            }
+                        }
+                        None
+                    })
+                    .unwrap_or(h - 55.);
                 frame(
                     &mut app,
                     &ctx,
                     w,
                     h,
                     vec![
-                        Event::PointerMoved(Pos2::new(w / 2., h - 55.)),
+                        Event::PointerMoved(Pos2::new(w / 2., scroll_y)),
                         Event::MouseWheel {
                             unit: egui::MouseWheelUnit::Point,
                             delta: Vec2::new(0., -60.),

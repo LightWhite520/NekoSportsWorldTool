@@ -314,7 +314,7 @@ impl App {
                     .draw_point(&painter, canvas, lat, lon, egui::Color32::RED, 4.);
             }
         }
-        self.osm_page.map.interact(ui, canvas);
+        self.osm_page.map.interact(ui, &response);
 
         if load_now {
             let path = self.osm_page.path.clone();

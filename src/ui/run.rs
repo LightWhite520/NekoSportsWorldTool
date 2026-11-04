@@ -857,7 +857,7 @@ impl App {
                 }
             }
         }
-        self.run_page.map.interact(ui, canvas);
+        self.run_page.map.interact(ui, &response);
     }
 
     fn draw_run_base_map(&mut self, ui: &mut egui::Ui, net: &route_planner::RoadGraph) {
@@ -891,7 +891,7 @@ impl App {
             egui::Color32::from_rgb(250, 252, 251),
         );
         self.run_page.map.draw_network(&painter, canvas, net);
-        self.run_page.map.interact(ui, canvas);
+        self.run_page.map.interact(ui, &response);
     }
 
     fn start_run(&mut self) {

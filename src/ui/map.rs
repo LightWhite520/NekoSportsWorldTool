@@ -7,6 +7,10 @@ use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 
 use crate::track::geom::{MET_PER_DEG_LAT, MET_PER_DEG_LNG};
 
+#[cfg(test)]
+#[path = "map_tests.rs"]
+mod tests;
+
 /// 地图视图状态（世界坐标为度）。
 pub struct MapState {
     /// 参考中心（lat, lon）。
@@ -92,23 +96,23 @@ impl MapState {
         )
     }
 
-    /// 处理拖拽/缩放交互（需在分配好 rect 后调用）。
-    pub fn interact(&mut self, ui: &egui::Ui, rect: Rect) {
-        self.dragged = false;
-        let (drag, scroll) = ui.input(|i| {
-            let hover = i
-                .pointer
-                .interact_pos()
-                .map(|p| rect.contains(p))
-                .unwrap_or(false);
-            let dragging = hover && i.pointer.primary_down() && i.pointer.is_decidedly_dragging();
-            (dragging, if hover { i.raw_scroll_delta.y } else { 0.0 })
-        });
-        if drag {
-            let d = ui.input(|i| i.pointer.delta());
-            self.offset += d;
-            self.dragged = true;
+    /// 使用画布的拖拽归属，避免页面滑动经过地图时也触发平移。
+    pub fn interact(&mut self, ui: &egui::Ui, response: &egui::Response) {
+        self.dragged = response.dragged_by(egui::PointerButton::Primary);
+        if self.dragged {
+            self.offset += response.drag_delta();
         }
+        let scroll = if ui.is_enabled() && ui.rect_contains_pointer(response.rect) {
+            ui.input_mut(|i| {
+                let scroll = i.raw_scroll_delta.y;
+                // 父 ScrollArea 使用平滑滚动量；连同后续帧的平滑尾量一起消费。
+                i.raw_scroll_delta = Vec2::ZERO;
+                i.smooth_scroll_delta = Vec2::ZERO;
+                scroll
+            })
+        } else {
+            0.0
+        };
         if scroll != 0.0 {
             let factor = (scroll * 0.0015).exp() as f32;
             self.scale = (self.scale * factor).clamp(0.002, 200.0);
