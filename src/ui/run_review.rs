@@ -105,8 +105,11 @@ pub(super) fn draw_preview(
             .strong()
             .color(ui.visuals().text_color()),
     );
+    // Leave a page-scroll gutter beside the map on short screens, where the
+    // interactive canvas may otherwise occupy the entire visible scroll area.
+    let map_width = (ui.available_width() - 24.0).max(1.0);
     let (response, painter) =
-        ui.allocate_painter(egui::vec2(ui.available_width(), 250.0), egui::Sense::drag());
+        ui.allocate_painter(egui::vec2(map_width, 250.0), egui::Sense::drag());
     let rect = response.rect;
     if *map_size != rect.size() {
         map.fit(rect.shrink(15.0), &review.route);

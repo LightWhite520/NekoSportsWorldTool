@@ -71,7 +71,12 @@ fn scroll_to_label(app: &mut App, ctx: &egui::Context, w: f32, h: f32, label: &s
             w,
             h,
             vec![
-                Event::PointerMoved(Pos2::new(w / 2.0, h - 70.0)),
+                // The preview map owns wheel gestures. Scroll the page at its
+                // right-side gutter instead of repeatedly zooming the map.
+                Event::PointerMoved(Pos2::new(
+                    if app.run_review.is_some() { w - 20.0 } else { w / 2.0 },
+                    h - 70.0,
+                )),
                 Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
                     delta: Vec2::new(0.0, -60.0),
