@@ -135,7 +135,7 @@ pub(super) fn draw_preview(
             ui.visuals().text_color(),
         );
     }
-    map.interact(ui, rect);
+    map.interact(ui, &response);
     if ui.small_button("适应完整路线").clicked() {
         *map_size = egui::Vec2::ZERO;
     }

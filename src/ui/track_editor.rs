@@ -310,7 +310,7 @@ impl App {
                 }
             }
         }
-        editor.map.interact(ui, rect);
+        editor.map.interact(ui, &response);
         if changed && editor.editing {
             selection.confirmed = false;
         }
