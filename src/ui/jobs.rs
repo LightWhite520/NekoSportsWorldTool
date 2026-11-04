@@ -223,7 +223,12 @@ impl App {
                 stage("获取当前学校策略与路线点位…");
                 let policy = crate::api::policy::fetch_policy(&mut client)?;
                 control.check()?;
-                let pts = crate::api::points::fetch_points_ext(
+                let fetch_points = if force {
+                    crate::api::points::fetch_points_fresh_ext
+                } else {
+                    crate::api::points::fetch_points_ext
+                };
+                let pts = fetch_points(
                     &mut client,
                     anchor,
                     run_area_id,

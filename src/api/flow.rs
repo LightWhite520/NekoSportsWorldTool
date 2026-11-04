@@ -142,7 +142,15 @@ pub fn run_reviewed_flow_cancellable(
     }
     let anchor: Coordinate = client.identity.anchor_coordinate()?;
     let area_id = (fences.area.run_area_id >= 0).then(|| fences.area.run_area_id.to_string());
-    let pts = points::fetch_points_ext(client, anchor, area_id, log)?;
+    // Track confirmation is bound to the preview's checkpoint snapshot. Reuse
+    // only its valid scoped cache; if it expired, resolve() below rejects changes.
+    // Otherwise a random assignment on every fetch would make confirmation unusable.
+    let pts = if params.track_selection.is_some() {
+        log("[points] 已确认跑道：沿用有效预览点位；点位变化后须重新确认跑道");
+        points::fetch_points_ext(client, anchor, area_id, log)?
+    } else {
+        points::fetch_points_fresh_ext(client, anchor, area_id, log)?
+    };
     if pts.is_empty() {
         return Err("实时点位为空 —— 拒绝本地样本兜底".into());
     }

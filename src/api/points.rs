@@ -12,6 +12,9 @@ use serde_json::{json, Value};
 
 pub const POINTS_PATH: &str = "/api/v560/get/1/distance/1";
 
+mod response;
+pub use response::ResponseContext;
+
 /// 经纬度六位小数字符串。
 fn six_digit(v: f64) -> String {
     format!("{v:.6}")
@@ -33,6 +36,26 @@ pub fn fetch_points_ext(
     run_area_id: Option<String>,
     log: &mut dyn FnMut(&str),
 ) -> Result<Vec<Value>, String> {
+    fetch_points_cached(client, anchor, run_area_id, false, log)
+}
+
+/// A new preparation or explicit refresh must obtain a new server response.
+pub fn fetch_points_fresh_ext(
+    client: &mut ApiClient,
+    anchor: Coordinate,
+    run_area_id: Option<String>,
+    log: &mut dyn FnMut(&str),
+) -> Result<Vec<Value>, String> {
+    fetch_points_cached(client, anchor, run_area_id, true, log)
+}
+
+fn fetch_points_cached(
+    client: &mut ApiClient,
+    anchor: Coordinate,
+    run_area_id: Option<String>,
+    fresh: bool,
+    log: &mut dyn FnMut(&str),
+) -> Result<Vec<Value>, String> {
     anchor.validate()?;
     let login = client.login.as_ref().ok_or("请先登录后获取点位")?;
     let scope = model::PointsCacheScope {
@@ -41,7 +64,11 @@ pub fn fetch_points_ext(
         run_area_id: run_area_id.clone(),
     };
     // ① TTL 内命中缓存直接返回
-    if let Some((ts, pts)) = model::load_points_cache_for(anchor, &scope) {
+    if let Some((ts, pts)) = (!fresh)
+        .then(|| model::load_points_cache_for(anchor, &scope))
+        .flatten()
+        .filter(|(_, pts)| points_bd(pts).len() == pts.len())
+    {
         log(&format!(
             "[points] 缓存命中（{} 秒前，{} 点）",
             (crate::crypto::envelope::now_ms() - ts) / 1000,
@@ -49,6 +76,11 @@ pub fn fetch_points_ext(
         ));
         return Ok(pts);
     }
+    log(if fresh {
+        "[points] 本次重新向服务器获取检查点，不复用预览缓存"
+    } else {
+        "[points] 无有效预览缓存，向服务器获取检查点"
+    });
     // ② 请求接口
     let uid = client.login.as_ref().map(|s| s.uid).unwrap_or(0);
     let unid = client
@@ -87,25 +119,21 @@ pub fn fetch_points_ext(
 
     let out = client.envelope_request("POST", &url, &body, crate::crypto::header::UA_IOS, &[])?;
     let dec = out.decrypted.ok_or("点位接口响应无法解密")?;
-    let pts = parse_points(&dec.business)?;
-    let _ = model::save_points_cache(anchor, &scope, &pts);
+    let parsed = response::parse(&dec.business)?;
+    let (pts, context) = parsed.require_points()?;
+    log(&format!(
+        "[points] 已获取 {} 个检查点；列表来源 {}；响应{}明确区域 ID",
+        pts.len(), context.list_path,
+        if context.run_area_id.is_some() { "包含" } else { "未包含" },
+    ));
+    // Preserve explicit metadata for local diagnosis, never infer an area from fence.id.
+    let _ = model::save_points_cache_with_context(anchor, &scope, &pts, Some(context));
     Ok(pts)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_points(payload: &Value) -> Result<Vec<Value>, String> {
-    let payload = super::client::check_business(payload)?;
-    // pointsResModels：优先顶层，其次 data 子对象
-    let pts: Vec<Value> = super::client::get_field(&payload, "pointsResModels")
-        .and_then(|m| m.as_array())
-        .cloned()
-        .unwrap_or_default();
-    if pts.is_empty() {
-        return Err("点位接口未返回有效点位列表".into());
-    }
-    if points_bd(&pts).len() != pts.len() {
-        return Err("点位接口含无效坐标".into());
-    }
-    Ok(pts)
+    response::parse(payload)?.require_points().map(|(points, _)| points)
 }
 
 /// 点位中心（BD 系）。

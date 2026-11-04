@@ -8,21 +8,7 @@ const CACHE_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
 // Do not echo request URLs or server response bodies into user-facing logs.
 pub(super) fn request_error(error: ureq::Error) -> String {
-    match error {
-        ureq::Error::Status(status, response) => {
-            let wait = response
-                .header("Retry-After")
-                .and_then(|value| value.trim().parse::<u64>().ok())
-                .map(|seconds| format!("请至少等待 {seconds} 秒后手动重试"))
-                .unwrap_or_else(|| "请稍后手动重试".into());
-            match status {
-                429 => format!("路网服务请求过多（HTTP 429）；{wait}"),
-                503 | 504 => format!("路网服务繁忙或超时（HTTP {status}）；{wait}，或缩小查询范围"),
-                _ => format!("路网服务请求失败（HTTP {status}），请稍后重试"),
-            }
-        }
-        ureq::Error::Transport(_) => "路网服务连接失败或超时，请检查网络后手动重试".into(),
-    }
+    crate::api::osm_download::request_error(error)
 }
 pub(super) struct Download {
     pub network: RoadGraph,
@@ -110,20 +96,8 @@ pub(super) fn download(center: Coordinate, radius: u32) -> Result<Download, Stri
             }
         }
     }
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(75))
-        .build();
-    let response = agent
-        .post("https://overpass-api.de/api/interpreter")
-        .set("User-Agent", super::MAP_USER_AGENT)
-        .send_form(&[("data", &query)])
-        .map_err(request_error)?;
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .take(MAX_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("读取路网失败：{error}"))?;
+    let bounds = crate::api::osm_download::Bounds::around(center.latitude, center.longitude, radius)?;
+    let bytes = crate::api::osm_download::download(&query, bounds, MAX_BYTES as u64, || Ok(()))?;
     let network = parse(&bytes)?;
     super::disk_cache::store(&cache, super::disk_cache::ROAD_LIMIT, &[(&path, &bytes)])
         .map_err(|_| "保存路网失败：请检查磁盘空间与写入权限")?;

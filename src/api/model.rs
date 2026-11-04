@@ -432,6 +432,8 @@ struct PointsCache {
     anchor: crate::location::Coordinate,
     scope: PointsCacheScope,
     points: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    response_context: Option<super::points::ResponseContext>,
 }
 
 impl PointsCache {
@@ -470,11 +472,21 @@ pub fn save_points_cache(
     scope: &PointsCacheScope,
     points: &[serde_json::Value],
 ) -> Result<(), String> {
+    save_points_cache_with_context(anchor, scope, points, None)
+}
+
+pub(crate) fn save_points_cache_with_context(
+    anchor: crate::location::Coordinate,
+    scope: &PointsCacheScope,
+    points: &[serde_json::Value],
+    response_context: Option<super::points::ResponseContext>,
+) -> Result<(), String> {
     let doc = PointsCache {
         ts: crate::crypto::envelope::now_ms(),
         anchor,
         scope: scope.clone(),
         points: points.to_vec(),
+        response_context,
     };
     write_json("points_cache.json", &doc)
 }
@@ -485,6 +497,7 @@ mod points_cache_tests {
     #[test]
     fn cache_is_scoped_to_anchor() {
         let cache = PointsCache {
+            response_context: None,
             ts: 1,
             anchor: crate::location::Coordinate::new(39.9, 116.4, 0.0).unwrap(),
             scope: PointsCacheScope {

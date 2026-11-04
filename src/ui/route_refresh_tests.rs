@@ -140,6 +140,37 @@ fn wire_point(lat: f64, lon: f64) -> Value {
 }
 
 #[test]
+fn fresh_points_bypass_scoped_cache_preserve_context_and_never_fallback_on_error() {
+    use crate::api::{client::ApiClient, model, points};
+    let root = FixtureDir::new();
+    let old = vec![wire_point(39.9, 116.4)];
+    let fresh = vec![wire_point(39.901, 116.401)];
+    let (host, server) = mock_school(vec![
+        (points::POINTS_PATH, json!({"error":10000,"data":{"result":{
+            "runAreaId":73,"pointsModelList":fresh,"geoFences":[{"id":123,"points":[]}]
+        }}})),
+        (points::POINTS_PATH, json!({"error":10603,"message":"fixture rate limit"})),
+    ]);
+    let mut client = ApiClient::new(HeaderIdentity::default(), Some(Session {
+        uid:42, unid:"77".into(), token:"local-fixture-only".into(), ..Default::default()
+    }));
+    client.set_test_host(host);
+    let anchor = crate::location::Coordinate::new(39.9,116.4,0.).unwrap();
+    let scope = model::PointsCacheScope {uid:42,unid:"77".into(),run_area_id:Some("73".into())};
+    model::save_points_cache(anchor, &scope, &old).unwrap();
+    assert_eq!(points::fetch_points_ext(&mut client, anchor, scope.run_area_id.clone(), &mut |_|{}).unwrap(), old);
+    let mut logs = Vec::new();
+    assert_eq!(points::fetch_points_fresh_ext(&mut client, anchor, scope.run_area_id.clone(), &mut |s| logs.push(s.to_string())).unwrap(), fresh);
+    let cache: Value = serde_json::from_slice(&std::fs::read(root.0.join("points_cache.json")).unwrap()).unwrap();
+    assert_eq!(cache["points"], json!(fresh));
+    assert_eq!(cache["response_context"]["run_area_id"], 73);
+    assert_eq!(cache["response_context"]["list_path"], "$.data.result.pointsModelList");
+    assert!(logs.iter().any(|s| s.contains("不复用")));
+    assert!(points::fetch_points_fresh_ext(&mut client, anchor, scope.run_area_id, &mut |_|{}).unwrap_err().contains("10603"));
+    assert_eq!(server.join().unwrap(), 2);
+}
+
+#[test]
 fn string_data_http_refresh_reaches_a_complete_campus_preview() {
     let root = FixtureDir::new();
     let first = wire_point(39.9, 116.4);
@@ -175,13 +206,13 @@ fn string_data_http_refresh_reaches_a_complete_campus_preview() {
     let wgs_center = app.run_page.map.center;
     assert!(app.run_page.base_map_request.is_some());
     let anchor = app.identity.anchor_coordinate().unwrap();
-    // A previous run-area cache must not suppress the current campus request.
+    // Even a matching run-area cache must not suppress an explicit refresh.
     crate::api::model::save_points_cache(
         anchor,
         &crate::api::model::PointsCacheScope {
             uid: 42,
             unid: "77".into(),
-            run_area_id: Some("12".into()),
+            run_area_id: Some("73".into()),
         },
         &[json!({"lat":1.,"lon":1.})],
     )

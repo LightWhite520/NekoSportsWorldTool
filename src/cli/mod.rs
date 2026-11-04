@@ -154,7 +154,7 @@ pub(crate) fn print_rows(rows: &[RecordRow]) {
             ),
             pace,
             r.avg_step_freq,
-            if r.complete { "是" } else { "否" },
+            match r.complete { Some(true) => "是", Some(false) => "否", None => "未知" },
             r.rrid
         );
     }

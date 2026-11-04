@@ -11,6 +11,7 @@ pub mod gt4image;
 pub mod login;
 pub mod model;
 pub mod obs;
+pub(crate) mod osm_download;
 pub mod points;
 pub mod policy;
 pub mod rank;
