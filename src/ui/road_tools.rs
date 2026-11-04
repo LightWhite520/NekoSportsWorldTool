@@ -82,6 +82,7 @@ impl App {
                         {
                             if entry.fences.is_empty() {
                                 self.config.osm_path.clear();
+                                self.config.road_cache_path.clear();
                                 let _ = crate::api::model::save_config(&self.config);
                                 self.refresh_school_route(true);
                             } else if let Some(c) = self.osm_page.campuses.iter().find(|c| {
@@ -94,6 +95,7 @@ impl App {
                                     confirmed: false,
                                 });
                                 self.config.osm_path.clear();
+                                self.config.road_cache_path.clear();
                                 let _ = crate::api::model::save_config(&self.config);
                                 self.refresh_school_route(true);
                             } else {
@@ -204,7 +206,7 @@ impl App {
             let mut value = crate::diagnostics::report(
                 &self.status,
                 &self.osm_page.status,
-                !self.config.osm_path.is_empty(),
+                !self.config.manual_road_path().is_empty(),
                 self.osm_page.offline,
                 nodes,
                 edges,
@@ -227,7 +229,9 @@ impl App {
         let request_id = self.begin_network_load();
         self.osm_page.offline = true;
         self.osm_page.status = "正在后台读取离线缓存…".into();
-        self.run_page.route_mode = crate::track::generate_road::RouteMode::Road;
+        if !self.run_page.route_mode.uses_network() {
+            self.run_page.route_mode = crate::track::generate_road::RouteMode::Road;
+        }
         let anchor = self
             .identity
             .anchor_coordinate()
@@ -250,6 +254,7 @@ impl App {
                 Ok(std::sync::Arc::new(net))
             });
             let _ = tx.send(super::osm::NetworkLoad {
+                source: None,
                 pending: false,
                 warning: String::new(),
                 offline: true,

@@ -1,24 +1,10 @@
-//! 真实道路路由轨迹生成器（模式 B）。
-//!
-//! 与经典模式（`generator::build`）的分工：
-//! - 几何源为路网闭环路线（而非 Catmull-Rom 环）；
-//! - 配速为运动学速度剖面：OU 均值回归 + 弯道预判刹车（`kinematics::pace_profile`）；
-//! - 步频/步幅为生物力学 OU 耦合（`biomech::ou_cadence_series` + `gait`）；
-//! - GPS 抖动为 AR(1) 相关漂移 + 高斯测量噪声 + 建筑 SDF 衰减（`noise::GpsJitter`）。
-//!
-//! 协议字段/哨兵/断崖/吸附/10s 窗与经典模式完全一致。
+//! Road geometry and confirmed athletics circuits, sharing the motion adapter.
 
-use super::generator::{SPEED_CEIL, SPEED_FLOOR};
-use super::geom::{
-    fmt_gain_time, ring_point_at, round_to, to_bd, wgs84_to_bd09, Rng, MET_PER_DEG_LAT,
-    MET_PER_DEG_LNG,
-};
-use super::model::{GenPoint, Track};
-use super::postfix::apply_post_fixes;
-use route_planner::{
-    fatigue_from_km, gait, ou_cadence_series, pace_profile, plan_route_split, Coord, GpsJitter,
-    KinParams, RoadGraph, Route, RouteOptions, Sdf,
-};
+#[cfg(test)]
+use super::geom::MET_PER_DEG_LNG;
+use super::geom::{wgs84_to_bd09, MET_PER_DEG_LAT};
+use super::model::Track;
+use route_planner::{plan_route_split, Coord, RoadGraph, Route, RouteOptions};
 
 /// 路线算法模式（二选一）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -28,13 +14,28 @@ pub enum RouteMode {
     Legacy,
     /// 真实道路拓扑路由。
     Road,
+    /// Existing checkpoint route with bounded observation drift.
+    Track,
 }
 
 impl RouteMode {
     pub fn from_str(s: &str) -> Self {
         match s {
             "road" => RouteMode::Road,
+            "track" => RouteMode::Track,
             _ => RouteMode::Legacy,
+        }
+    }
+
+    pub fn uses_network(self) -> bool {
+        matches!(self, Self::Road | Self::Track)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Road => "road",
+            Self::Track => "track",
         }
     }
 }
@@ -66,6 +67,9 @@ pub fn load_network_path(path: &str) -> Result<RoadGraph, String> {
 
 /// 路网预览计划（供地图显示）：对齐后的路网/建筑 + 生成的路线（BD 系）。
 pub struct RoadPlan {
+    pub prefix_m: f64,
+    pub circuit_m: f64,
+    pub track_mode: bool,
     pub arcs: Vec<f64>,
     pub laps: Vec<f64>,
     pub route: Vec<(f64, f64)>,
@@ -113,6 +117,18 @@ pub fn plan_road_view(
     seed: u64,
     fences: &[Vec<(f64, f64)>],
 ) -> Result<RoadPlan, String> {
+    plan_road_view_for_mode(net, points_bd, dist, dur, seed, fences, RouteMode::Road)
+}
+
+pub fn plan_road_view_for_mode(
+    net: &RoadGraph,
+    points_bd: &[(f64, f64)],
+    dist: f64,
+    dur: i64,
+    seed: u64,
+    fences: &[Vec<(f64, f64)>],
+    mode: RouteMode,
+) -> Result<RoadPlan, String> {
     if !fences.is_empty() {
         crate::api::school_roads::validate_fences(fences)?;
     }
@@ -121,7 +137,27 @@ pub fn plan_road_view(
     g = apply_fences(&g, fences);
     let ordered = points_bd.to_vec();
     let route = required_route(&g, &ordered, dist, dur, seed)?;
-    let route_pts: Vec<(f64, f64)> = route.points.iter().map(|p| (p.lat, p.lon)).collect();
+    if mode != RouteMode::Track {
+        route_planner::motion::generate(
+            &route_planner::itinerary::Itinerary::looping(route.clone()).expand(dist)?,
+            dur,
+            seed,
+        )?;
+    }
+    let mut laps = super::route_view::laps(&route, dist);
+    let (route_pts, arcs, length_m) = if mode == RouteMode::Track {
+        let journey = regular_journey(&route, dist, seed, &g)?;
+        laps = journey.laps;
+        let track = super::motion::build_regular(&journey.route, dur, seed, 0, &g.boundaries)?;
+        (
+            track.locations.iter().map(|p| (p.gLat, p.gLng)).collect(),
+            track.locations.iter().map(|p| p.totalDis).collect(),
+            track.totalDistance,
+        )
+    } else {
+        (route.points.iter().map(|p| (p.lat, p.lon)).collect(),
+         route.points.iter().map(|p| p.s).collect(), route.length_m)
+    };
     let edges: Vec<Vec<(f64, f64)>> = g
         .edges_deg()
         .iter()
@@ -133,10 +169,13 @@ pub fn plan_road_view(
         .map(|r| r.iter().map(|c| (c.lat, c.lon)).collect())
         .collect();
     Ok(RoadPlan {
-        arcs: route.points.iter().map(|p| p.s).collect(),
-        laps: super::route_view::laps(&route, dist),
+        prefix_m: 0.,
+        circuit_m: route.length_m,
+        track_mode: false,
+        arcs,
+        laps,
         route: route_pts,
-        length_m: route.length_m,
+        length_m,
         edges,
         buildings,
         checkpoints: ordered,
@@ -152,6 +191,13 @@ pub fn plan_road_view(
 pub fn align_network(net: &mut RoadGraph) {
     if net.graph.node_count() == 0 {
         return;
+    }
+    for track in &mut net.tracks {
+        for c in &mut track.points {
+            let (lat, lon) = wgs84_to_bd09(c.lat, c.lon);
+            c.lat = lat;
+            c.lon = lon;
+        }
     }
     for node in net.graph.node_weights_mut() {
         let (lat, lon) = wgs84_to_bd09(node.coord.lat, node.coord.lon);
@@ -189,30 +235,6 @@ pub fn radial_order(points_bd: &[(f64, f64)]) -> Vec<(f64, f64)> {
     ordered
 }
 
-/// 路线 → 平面折线 + 弧长表。
-///
-/// `arcs[k]` 必须与 `dense[k]` 一一对应（`ring_point_at` 按同下标取弧长），
-/// 因此直接取每个采样点的累计弧长 `p.s`（`dense` 末点已闭合回起点）。
-fn route_ring(route: &Route, c_lat: f64, c_lng: f64) -> (Vec<(f64, f64)>, Vec<f64>) {
-    let dense: Vec<(f64, f64)> = route
-        .points
-        .iter()
-        .map(|p| {
-            (
-                (p.lon - c_lng) * MET_PER_DEG_LNG,
-                (p.lat - c_lat) * MET_PER_DEG_LAT,
-            )
-        })
-        .collect();
-    let arcs: Vec<f64> = route.points.iter().map(|p| p.s).collect();
-    (dense, arcs)
-}
-
-pub fn effective_duration(dist: f64, dur: i64) -> i64 {
-    let speed = (dist / dur.max(1) as f64).clamp(SPEED_FLOOR + 0.1, SPEED_CEIL - 0.1);
-    (dist / speed).round().max(1.0) as i64
-}
-
 fn required_route(
     net: &RoadGraph,
     points: &[(f64, f64)],
@@ -223,7 +245,7 @@ fn required_route(
     if !dist.is_finite() || dist <= 0.0 || dur <= 0 {
         return Err("距离和时长必须为正数".into());
     }
-    let avg = dist / effective_duration(dist, dur) as f64;
+    let avg = dist / dur as f64;
     let opts = RouteOptions {
         a_c_max: 2.5,
         min_radius_m: (avg * avg / 2.5).max(6.0),
@@ -280,13 +302,26 @@ pub fn build_road(
     must_bd: &[(f64, f64)],
     net: &RoadGraph,
 ) -> Result<Track, String> {
-    if dur <= 0 || !dist.is_finite() || dist <= 0.0 {
-        return Err("距离和时长必须为正数".into());
-    }
-    let mut rng = Rng::new(seed);
-    let dur_f = dur as f64;
-    let avg_v = dist / dur_f;
-    let a_c_max = 2.5;
+    build_road_with_variation(dist, dur, seed, start_ms, route_bd, must_bd, net, false, 1.0, 1.0)
+}
+
+pub fn build_regular_road(
+    dist: f64,
+    dur: i64,
+    seed: u64,
+    start_ms: i64,
+    route_bd: &[(f64, f64)],
+    must_bd: &[(f64, f64)],
+    net: &RoadGraph,
+) -> Result<Track, String> {
+    build_road_with_variation(dist, dur, seed, start_ms, route_bd, must_bd, net, true, 1.0, 1.0)
+}
+
+pub fn build_road_with_variation(
+    dist: f64, dur: i64, seed: u64, start_ms: i64,
+    route_bd: &[(f64, f64)], must_bd: &[(f64, f64)], net: &RoadGraph, regular: bool,
+    variation: f64, drift_variation: f64,
+) -> Result<Track, String> {
     let mut required = route_bd.to_vec();
     for p in must_bd {
         if !required.contains(p) {
@@ -294,300 +329,17 @@ pub fn build_road(
         }
     }
     let route = required_route(net, &required, dist, dur, seed)?;
-
-    let n_pts = route_bd.len().max(1);
-    let (c_lat, c_lng) = (
-        route_bd.iter().map(|q| q.0).sum::<f64>() / n_pts as f64,
-        route_bd.iter().map(|q| q.1).sum::<f64>() / n_pts as f64,
-    );
-    let (dense, arcs) = route_ring(&route, c_lat, c_lng);
-
-    // 时间网格（同经典模式）
-    let mut times = Vec::new();
-    let mut t = 0.0;
-    while t < dur_f {
-        times.push(t);
-        t += if rng.random() < 0.80 {
-            5.0
-        } else {
-            rng.choice(&[1.0, 2.0, 3.0, 4.0, 6.0, 7.0, 8.0])
-        };
-    }
-    let n = times.len();
-    let mut dts: Vec<f64> = (0..n - 1).map(|i| times[i + 1] - times[i]).collect();
-    dts.push(1.0f64.max(dur_f - times[n - 1]));
-
-    // 运动学速度剖面：OU 配速 + 弯道预判刹车 + 精确命中目标距离
-    let kin = KinParams {
-        a_c_max,
-        ..Default::default()
+    let expanded = if regular {
+        regular_journey(&route, dist, seed, net)?.route
+    } else {
+        route_planner::itinerary::Itinerary::looping(route).expand(dist)?
     };
-    let speed_seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let w = pace_profile(
-        &route,
-        avg_v,
-        &dts,
-        dist,
-        speed_seed,
-        &kin,
-        SPEED_FLOOR,
-        SPEED_CEIL,
-    );
-    let speeds: Vec<f64> = w.clone();
-    let seg_dist: Vec<f64> = (0..n).map(|i| w[i] * dts[i]).collect();
-
-    // 点位类型（同经典模式）
-    let tl_w = [
-        ((-1i64, 4i64), 54u32),
-        ((-1, 1), 27),
-        ((-1, 12), 13),
-        ((-1, 5), 3),
-        ((-1, 6), 2),
-    ];
-    let mut kinds: Vec<(i64, i64)> = Vec::with_capacity(n);
-    for _ in 0..n {
-        let u = rng.random();
-        if u < 0.39 {
-            kinds.push((3, 1));
-        } else if u < 0.93 {
-            kinds.push((0, 1));
-        } else if u < 0.96 {
-            kinds.push(rng.weighted(&tl_w));
-        } else {
-            kinds.push((rng.choice(&[1, 1, 1, 1, 2, 2]), 1));
-        }
-    }
-    for i in 1..kinds.len() {
-        let prev_drift = (-1 == kinds[i - 1].0) || kinds[i - 1].0 == 5 || kinds[i - 1].0 == 6;
-        if kinds[i].0 != -1 && prev_drift && rng.random() < 0.08 {
-            kinds[i] = (if rng.random() < 0.75 { 7 } else { 8 }, 1);
-        }
-    }
-    for i in 1..n {
-        if kinds[i].0 == -1 && kinds[i - 1].0 == -1 {
-            kinds[i] = (rng.choice(&[3, 0]), 1);
-        }
-    }
-    let normal_idx: Vec<usize> = (0..n).filter(|&i| kinds[i].0 != -1 && i > 1).collect();
-    let share: f64 = normal_idx.iter().map(|&i| seg_dist[i]).sum();
-    let share = if share == 0.0 { 1.0 } else { share };
-    let mut disp_of = vec![0.0f64; n];
-    for &i in &normal_idx {
-        disp_of[i] = seg_dist[i] * (dist / share);
-    }
-
-    // 建筑 SDF（自适应放大漂移）
-    let sdf = Sdf::from_buildings(
-        &net.buildings,
-        |c| {
-            [
-                (c.lon - c_lng) * MET_PER_DEG_LNG,
-                (c.lat - c_lat) * MET_PER_DEG_LAT,
-            ]
-        },
-        2.0,
-        30.0,
-    );
-
-    // 生物力学：步频在目标值附近 OU 波动，步幅反解严格满足 v=(cad/60)·stride
-    let targets: Vec<f64> = (0..n)
-        .map(|i| {
-            let km_done = (times[i] / dur_f) * dist / 1000.0;
-            gait(speeds[i], fatigue_from_km(km_done)).cadence
-        })
-        .collect();
-    let cadence_seed = seed.wrapping_add(0xC6A4_A793_5BD1_E995);
-    let cadences = ou_cadence_series(&targets, &dts, cadence_seed, 0.25, 0.5, 110.0, 220.0);
-
-    // GPS 抖动：AR(1) 相关漂移 + 高斯测量噪声（SDF 逐点放大）
-    let mut jitter = GpsJitter::new(0.72, 0.75, 0.3);
-
-    let mut locs: Vec<GenPoint> = Vec::with_capacity(n);
-    let mut positions = Vec::with_capacity(n);
-    let mut s = 0.0f64;
-    let mut t_acc = 0.0f64;
-    let mut dist_acc = 0.0f64;
-    let mut steps_acc = 0.0f64;
-    let mut alt = 82.0 + rng.uniform(-1.0, 1.0);
-    let n_est = 1.max((dur_f / 5.0) as i64);
-    let alt_sigma = rng.uniform(3.8, 6.2) / (0.40 * n_est as f64);
-    for i in 0..n {
-        let dt = dts[i];
-        let (typ, lt) = kinds[i];
-        t_acc += dt;
-        let pos = |ss: f64| ring_point_at(&dense, &arcs, ss);
-        let mut d_step = 0.0f64;
-        let px;
-        let py;
-        let x;
-        let y;
-        let rad;
-        let state;
-        if typ != -1 {
-            d_step = disp_of[i];
-            s += d_step;
-            let (bx, by) = pos(s);
-            x = bx;
-            y = by;
-            // AR(1) 相关漂移 + 高斯测量噪声，SDF 自适应放大
-            let sc = sdf.sigma_scale([bx, by]);
-            let z = [
-                rng.gauss(0.0, 1.0),
-                rng.gauss(0.0, 1.0),
-                rng.gauss(0.0, 1.0),
-                rng.gauss(0.0, 1.0),
-            ];
-            let (jxd, jyd) = jitter.step(sc, z);
-            px = bx + jxd;
-            py = by + jyd;
-            rad = round_to(
-                if typ == 3 {
-                    rng.uniform(1.4, 5.1)
-                } else {
-                    rng.uniform(1.4, 2.4)
-                },
-                2,
-            );
-            state = if typ == 0 {
-                rng.weighted(&[(1, 145), (2, 45), (3, 164)])
-            } else {
-                rng.weighted(&[(1, 145), (2, 256), (3, 151)])
-            };
-        } else {
-            if rng.random() >= 0.20 {
-                d_step = rng.uniform(0.0, super::generator::MAX_EXCEPTION_DRIFT_M);
-            }
-            let (bx, by) = pos(s);
-            x = bx;
-            y = by;
-            if d_step > 0.0 {
-                let ang = rng.uniform(0.0, std::f64::consts::TAU);
-                px = x + d_step * ang.sin();
-                py = y + d_step * ang.cos();
-            } else if let Some(last) = locs.last() {
-                py = (last.gLat - c_lat) * MET_PER_DEG_LAT;
-                px = (last.gLng - c_lng) * MET_PER_DEG_LNG;
-            } else {
-                let (jx, jy) = jitter.state();
-                px = x + jx;
-                py = y + jy;
-            }
-            rad = round_to(rng.uniform(1.6, 10.0), 2);
-            state = rng.weighted(&[(1, 102), (2, 124), (3, 136)]);
-        }
-        if typ != -1 {
-            dist_acc += d_step;
-        }
-        positions.push(s);
-        let (lat, lng) = if net.boundaries.is_empty() {
-            to_bd(px, py, c_lat, c_lng)
-        } else {
-            // Boundary mode follows the actual road, including exceptional samples.
-            to_bd(x, y, c_lat, c_lng)
-        };
-        alt += 0.04 * (82.0 - alt) + rng.gauss(0.0, alt_sigma);
-        // 生物力学联动：v=(cad/60)·stride
-        let v_now = speeds[i];
-        let mut stride = v_now * 60.0 / cadences[i];
-        if stride > 1.7 {
-            stride = 1.7;
-        } else if stride < 0.5 {
-            stride = 0.5;
-        }
-        let cad = v_now * 60.0 / stride;
-        steps_acc += cad / 60.0 * dt;
-        let nxt = pos(s + 2.0);
-        let brg =
-            ((nxt.0 - x).atan2(nxt.1 - y).to_degrees() + rng.gauss(0.0, 35.0)).rem_euclid(360.0);
-        let (avg_sp, gps_speed) = if typ == -1 {
-            let avg = round_to(dist_acc / t_acc.max(1.0), 4);
-            let gps = rng.uniform(0.5, super::generator::MAX_EXCEPTION_GPS_SPEED_KMH);
-            (avg, round_to(gps, 4))
-        } else {
-            let avg = round_to(d_step / dt, 4);
-            let kmh = avg * 3.6;
-            let sigma = (kmh * 0.08).max(0.05);
-            let gps = if rng.random() < 0.20 {
-                0.0
-            } else {
-                round_to((kmh + rng.gauss(0.0, sigma)).max(0.0), 4)
-            };
-            (avg, gps)
-        };
-
-        locs.push(GenPoint {
-            id: i as i64 + 1,
-            flag: start_ms,
-            lat: -1.0,
-            lng: -1.0,
-            gLat: if net.boundaries.is_empty() {
-                round_to(lat, 7)
-            } else {
-                lat
-            },
-            gLng: if net.boundaries.is_empty() {
-                round_to(lng, 7)
-            } else {
-                lng
-            },
-            speed: round_to(gps_speed, 4),
-            avgSpeed: avg_sp,
-            radius: rad,
-            accuracy: rad,
-            ptype: typ,
-            locType: lt,
-            hasAltitude: true,
-            totalTime: round_to(t_acc, 0) as i64,
-            totalDis: round_to(dist_acc, 4),
-            validDis: round_to(dist_acc, 4),
-            validTime: round_to(t_acc, 0) as i64,
-            steps: steps_acc as i64,
-            stepDistance: 0.0,
-            gainTime: fmt_gain_time(start_ms + (t_acc * 1000.0) as i64),
-            gainTimeMs: start_ms + (t_acc * 1000.0) as i64,
-            queueNum: 0,
-            coorType: "gcj02".into(),
-            bdA: round_to(alt, 2),
-            bdD: round_to(brg, 2),
-            bdS: round_to((avg_sp * rng.uniform(0.6, 0.95)).max(0.0), 3),
-            bdG: rng.choice(&[1, 1, 1, -1]),
-            count: rng.randint(20, 88),
-            dtr: 0.0,
-            state,
-            locationId: String::new(),
-        });
-    }
-    apply_post_fixes(&mut locs, &mut rng, start_ms);
-    if !net.boundaries.is_empty() {
-        locs = super::school_track::preserve_corners(
-            locs,
-            &positions,
-            &route,
-            &net.boundaries,
-            start_ms,
-        )?;
-    }
-
-    let total_dis = round_to(dist, 3);
-    let mut track = Track {
-        totalTime: round_to(t_acc, 0) as i64,
-        totalDistance: total_dis,
-        validDistance: total_dis,
-        validTime: round_to(t_acc, 0) as i64,
-        startTime: start_ms,
-        startLatitude: locs[0].gLat,
-        startLongitude: locs[0].gLng,
-        totalSteps: steps_acc as i64,
-        locations: locs,
-        speedPerTenSec: Vec::new(),
-        stepsPerTenSec: Vec::new(),
-        segments: Vec::new(),
-    };
-    super::stats::rebuild(&mut track);
-    track.validate_consistency()?;
-    for point in route_bd.iter().chain(must_bd.iter()) {
-        if !super::wire::passes_point(&track, *point) {
-            return Err("最终道路轨迹未经过全部点位，请调整距离或路网".into());
+    let track = super::motion::build_with_variation(
+        &expanded, dur, seed, start_ms, &net.boundaries, regular, variation, drift_variation,
+    )?;
+    for &point in &required {
+        if !super::wire::passes_point(&track, point) {
+            return Err("最终轨迹未覆盖全部必经点".into());
         }
     }
     Ok(track)
@@ -833,5 +585,132 @@ mod preview_tests {
         net.rebuild_index();
         let net = apply_fences(&net, &fences);
         assert!(build_road(5000., 2000, 1, 0, &[points[0], points[3]], &[], &net).is_err());
+    }
+}
+
+/// Both preview and generation consume this same finite journey.
+pub fn track_itinerary(
+    net: &RoadGraph,
+    points: &[(f64, f64)],
+    dist: f64,
+    candidate: &route_planner::athletics::TrackCandidate,
+) -> Result<route_planner::itinerary::Itinerary, String> {
+    route_planner::athletics::plan(
+        net,
+        &points
+            .iter()
+            .map(|&(a, b)| Coord::new(b, a))
+            .collect::<Vec<_>>(),
+        candidate,
+        dist,
+    )
+}
+
+pub(super) fn regular_journey(route: &Route, distance: f64, seed: u64, net: &RoadGraph) -> Result<route_planner::lanes::Plan, String> {
+    route_planner::lanes::plan(&route_planner::itinerary::Itinerary::looping(route.clone()), distance, seed, &net.boundaries)
+}
+
+pub fn plan_track_view(
+    net: &RoadGraph,
+    points: &[(f64, f64)],
+    dist: f64,
+    dur: i64,
+    seed: u64,
+    fences: &[Vec<(f64, f64)>],
+    candidate: &route_planner::athletics::TrackCandidate,
+) -> Result<RoadPlan, String> {
+    if !fences.is_empty() {
+        crate::api::school_roads::validate_fences(fences)?;
+    }
+    let mut aligned = net.clone();
+    align_network(&mut aligned);
+    let g = apply_fences(&aligned, fences);
+    let itinerary = track_itinerary(&g, points, dist, candidate)?;
+    let journey = route_planner::lanes::plan(&itinerary, dist, seed, &g.boundaries)?;
+    let track = super::motion::build_regular(&journey.route, dur, seed, 0, &g.boundaries)?;
+    Ok(RoadPlan {
+        prefix_m: journey.prefix_m,
+        circuit_m: itinerary.circuit.length_m,
+        track_mode: true,
+        arcs: track.locations.iter().map(|p| p.totalDis).collect(),
+        route: track.locations.iter().map(|p| (p.gLat, p.gLng)).collect(),
+        length_m: track.totalDistance,
+        laps: journey.laps,
+        edges: g
+            .edges_deg()
+            .iter()
+            .map(|e| e.iter().map(|p| (p.lat, p.lon)).collect())
+            .collect(),
+        buildings: g
+            .buildings
+            .iter()
+            .map(|e| e.iter().map(|p| (p.lat, p.lon)).collect())
+            .collect(),
+        checkpoints: points.to_vec(),
+        fences: fences.to_vec(),
+    })
+}
+pub fn build_track(
+    net: &RoadGraph,
+    points: &[(f64, f64)],
+    dist: f64,
+    dur: i64,
+    seed: u64,
+    start_ms: i64,
+    candidate: &route_planner::athletics::TrackCandidate,
+) -> Result<Track, String> {
+    build_track_with_variation(net, points, dist, dur, seed, start_ms, candidate, 1.0, 1.0)
+}
+
+pub fn build_track_with_variation(
+    net: &RoadGraph, points: &[(f64, f64)], dist: f64, dur: i64, seed: u64, start_ms: i64,
+    candidate: &route_planner::athletics::TrackCandidate, variation: f64, drift_variation: f64,
+) -> Result<Track, String> {
+    let itinerary = track_itinerary(net, points, dist, candidate)?;
+    let route = route_planner::lanes::expand(&itinerary, dist, seed, &net.boundaries)?;
+    let track = super::motion::build_with_variation(
+        &route, dur, seed, start_ms, &net.boundaries, true, variation, drift_variation,
+    )?;
+    if points
+        .iter()
+        .any(|&p| !super::wire::passes_point(&track, p))
+    {
+        return Err("最终轨迹未经过全部必经点".into());
+    }
+    Ok(track)
+}
+
+#[cfg(test)]
+mod athletics_integration_tests {
+    use super::*;
+    #[test]
+    fn confirmed_wgs_map_preview_and_bd_generation_agree() {
+        let xml=br#"<osm><node id="1" lat="30" lon="10"/><node id="2" lat="30" lon="10.001"/><node id="3" lat="30.001" lon="10.001"/><node id="4" lat="30.001" lon="10"/><node id="5" lat="30" lon="9.999"/><way id="1"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/><nd ref="1"/><tag k="leisure" v="track"/></way><way id="2"><nd ref="5"/><nd ref="1"/><tag k="highway" v="footway"/></way></osm>"#;
+        let net = route_planner::load_osm(xml).unwrap();
+        let points = vec![wgs84_to_bd09(30., 9.999), wgs84_to_bd09(30., 10.)];
+        let candidate = net.tracks[0].clone();
+        let selection = crate::track::selection::TrackSelection {
+            context: crate::track::selection::context(&net, "fixture", &[], &points),
+            geometry: crate::track::selection::geometry(&candidate),
+            candidate,
+            confirmed: true,
+        };
+        let candidate = selection.resolve(&net, "fixture", &[], &points).unwrap();
+        let preview = plan_track_view(&net, &points, 2000., 800, 7, &[], &candidate).unwrap();
+        assert!(preview.prefix_m > 90.);
+        assert!((preview.prefix_m + preview.laps.iter().sum::<f64>() - 2000.).abs() < 1e-6);
+        let mut aligned = net.clone();
+        align_network(&mut aligned);
+        let track = build_track(&aligned, &points, 2000., 800, 7, 0, &candidate).unwrap();
+        track.validate_consistency().unwrap();
+        for &cp in &points {
+            assert!(crate::track::wire::passes_point(&track, cp));
+        }
+        let end = track.locations.last().unwrap();
+        assert!(
+            crate::track::analysis::distance((end.gLat, end.gLng), *preview.route.last().unwrap())
+                < 3.
+        );
+        assert!(plan_track_view(&net, &points, 2000., 10, 7, &[], &candidate).is_err());
     }
 }

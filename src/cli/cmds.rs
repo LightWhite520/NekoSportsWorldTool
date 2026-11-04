@@ -11,7 +11,27 @@ pub fn dispatch(args: Vec<String>) -> i32 {
     match cmd {
         "login" => cmd_login(&rest),
         "logout" => cmd_logout(),
+        "location" => cmd_location(&rest),
         "run" => cmd_run(&rest),
+        "motion-check" => super::motion_check::run(&rest),
+        #[cfg(all(feature = "gui", not(target_os = "android")))]
+        "preview-demo" => {
+            let flags = parse_flags(&rest);
+            let variation = match get(&flags, "variation").unwrap_or("1").parse::<f64>() {
+                Ok(value) => value,
+                Err(_) => { eprintln!("--variation 必须为 0–5 倍的数值"); return 1; }
+            };
+            let drift = match get(&flags, "drift").unwrap_or("1").parse::<f64>() {
+                Ok(value) => value,
+                Err(_) => { eprintln!("--drift 必须为 0–5 倍的数值"); return 1; }
+            };
+            match crate::ui::run_review_demo::run(
+                get(&flags, "capture-dir").map(std::path::PathBuf::from), variation, drift,
+            ) {
+                Ok(()) => 0,
+                Err(e) => { eprintln!("离线预览失败：{e}"); 1 }
+            }
+        }
         "template" => cmd_template(&rest),
         "ai" => cmd_ai(&rest),
         "ai-list" => cmd_ai_list(),
@@ -40,6 +60,30 @@ pub fn dispatch(args: Vec<String>) -> i32 {
 
 fn usage() {
     super::usage();
+}
+
+fn cmd_location(rest: &[&str]) -> i32 {
+    let flags = parse_flags(rest);
+    let city = get(&flags, "city").map(str::trim).filter(|city| !city.is_empty());
+    if get(&flags, "save").is_some() && city.is_none() {
+        eprintln!("保存定位需要 --city <实际城市>，避免沿用旧城市");
+        return 1;
+    }
+    match crate::location::system::locate() {
+        Ok(mut location) => {
+            println!("纬度 {:.6}，经度 {:.6}，精度约 {:.0} 米（WGS84）", location.latitude, location.longitude, location.accuracy);
+            if get(&flags, "save").is_some() {
+                location.city = city.map(str::to_owned);
+                let mut identity = model::load_identity();
+                if let Err(error) = location.apply(&mut identity).and_then(|()| model::save_identity(&identity)) {
+                    eprintln!("保存定位失败：{error}"); return 1;
+                }
+                println!("系统定位已保存");
+            }
+            0
+        }
+        Err(error) => { eprintln!("{error}"); 1 }
+    }
 }
 
 fn cmd_login(rest: &[&str]) -> i32 {
@@ -123,10 +167,49 @@ fn cmd_run(rest: &[&str]) -> i32 {
         seed
     };
     let cfg = model::load_config();
+    let motion_variation = match get(&flags, "variation") {
+        Some(value) => match value.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => { eprintln!("--variation 必须为 0–5 倍的数值"); return 1; }
+        },
+        None => cfg.motion_variation as f64,
+    };
+    let drift_variation = match get(&flags, "drift") {
+        Some(value) => match value.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => { eprintln!("--drift 必须为 0–5 倍的数值"); return 1; }
+        },
+        None => cfg.drift_variation as f64,
+    };
+    if let Err(e) = crate::track::motion::validate_drift_variation(drift_variation) {
+        eprintln!("{e}"); return 1;
+    }
+    if let Err(e) = route_planner::motion::validate_variation(motion_variation) {
+        eprintln!("{e}"); return 1;
+    }
     let route_mode = crate::track::generate_road::RouteMode::from_str(
         get(&flags, "route").unwrap_or(&cfg.route_mode),
     );
 
+    let track_selection = match get(&flags, "track") {
+        Some("off") => None,
+        Some(id) => match cfg
+            .track_selection
+            .clone()
+            .filter(|s| s.candidate.id == id && s.confirmed)
+        {
+            Some(s) => Some(s),
+            None => {
+                eprintln!("指定跑道未保存或未确认，请先在地图中确认");
+                return 1;
+            }
+        },
+        None if cfg.track_enabled => {
+            eprintln!("已启用跑道，请使用 --track <已确认 ID> 或 --track off");
+            return 1;
+        }
+        None => None,
+    };
     let dist = if dist_km > 0.0 {
         dist_km as f64 * 1000.0
     } else {
@@ -169,16 +252,22 @@ fn cmd_run(rest: &[&str]) -> i32 {
 
     let mut log = logger();
     let params = crate::api::flow::RunParams {
+        track_selection,
         dist,
         dur,
         start_ms,
         face_check: face as i64,
+        motion_variation,
+        drift_variation,
         manual_altitude,
         manual_altitude_range,
         seed,
         route_mode,
     };
-    match crate::api::flow::run_full_flow(&mut client, &params, &mut log) {
+    match crate::api::flow::run_reviewed_flow_cancellable(
+        &mut client, &params, &mut log, &crate::task_control::Control::default(),
+        &mut super::run_review::confirm,
+    ) {
         Ok(out) => {
             println!(
                 "记录提交成功 rrid={} uuid={}；OBS 上传={}/2；详情读取={}；服务端达标判定={}",
@@ -195,7 +284,8 @@ fn cmd_run(rest: &[&str]) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("跑步提交失败: {e}");
+            if e == crate::api::flow::RUN_CANCELLED { println!("{e}"); return 0; }
+            eprintln!("跑步任务失败: {e}");
             1
         }
     }
@@ -472,14 +562,20 @@ fn cmd_obs_sample(rest: &[&str]) -> i32 {
     };
     let pts_bd = crate::api::points::points_bd(&pts);
     let start_ms = crate::crypto::envelope::now_ms() - dur * 1000;
-    let track = crate::track::generator::build(
+    let track = match crate::track::generator::build(
         dist,
         dur,
         seed,
         (anchor.latitude, anchor.longitude),
         start_ms,
         &pts_bd,
-    );
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
     let sess = client.login.clone().unwrap_or_default();
     let uuid = uuid::Uuid::new_v4().to_string().to_uppercase();
     let obj = crate::track::wire::build_obs_object(
@@ -645,10 +741,15 @@ fn cmd_cheat(rest: &[&str]) -> i32 {
     match crate::api::cheat::query(&mut client, page, &mut log) {
         Ok(r) => {
             println!("自查：{}", r.label());
-            println!("检查时间：{}", crate::track::geom::fmt_cst(r.checked_at_ms, "%Y-%m-%d %H:%M:%S 北京时间"));
+            println!(
+                "检查时间：{}",
+                crate::track::geom::fmt_cst(r.checked_at_ms, "%Y-%m-%d %H:%M:%S 北京时间")
+            );
             if r.status() == crate::api::cheat::Status::Flagged {
                 println!("服务端原因：{}；发生时间：{}", r.reason(), r.occurred_at());
-                if let Some(id) = r.record_id() { println!("关联跑步记录：{id}"); }
+                if let Some(id) = r.record_id() {
+                    println!("关联跑步记录：{id}");
+                }
             }
             println!("本页通报 {} 条（非全校总数）", r.list.len());
             for item in r.list.iter().take(20) {

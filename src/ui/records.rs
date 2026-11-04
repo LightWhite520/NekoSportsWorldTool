@@ -183,11 +183,7 @@ impl App {
                         egui::Frame::group(ui.style()).show(ui, |ui| {
                             mobile::row(ui, |ui| {
                                 ui.strong(fmt_time(r.start_time));
-                                if r.complete {
-                                    ui.colored_label(theme::ok(), "达标");
-                                } else {
-                                    ui.colored_label(theme::err(), "未达标");
-                                }
+                                draw_completion(ui, r.complete);
                             });
                             ui.label(format!(
                                 "{:.2} km · {} · 配速 {pace_min}:{pace_sec:02}/km",
@@ -254,11 +250,7 @@ impl App {
                             ui.monospace(format!("{} spm", r.avg_step_freq));
                         });
                         row.col(|ui| {
-                            if r.complete {
-                                ui.colored_label(theme::ok(), "达标");
-                            } else {
-                                ui.colored_label(theme::err(), "未达标");
-                            }
+                            draw_completion(ui, r.complete);
                         });
                         row.col(|ui| {
                             ui.monospace(rrid.to_string());
@@ -526,6 +518,42 @@ fn draw_ai_detail_panel(ui: &mut egui::Ui, raw: &serde_json::Value) {
     }
 }
 
+fn draw_completion(ui: &mut egui::Ui, complete: Option<bool>) {
+    let (color, label) = match complete {
+        Some(true) => (theme::ok(), "达标"),
+        Some(false) => (theme::err(), "未达标"),
+        None => (theme::text_dim(), "未知"),
+    };
+    ui.colored_label(color, label);
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_completion_is_rendered_neutrally_in_list_and_reasons() {
+        for width in [360., 1100.] {
+            let ctx = egui::Context::default();
+            let output = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1400.))),
+                ..Default::default()
+            }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    draw_completion(ui, None);
+                    draw_detail_panel(ui, &serde_json::json!({"reasonList":[{"reason":"待核对"}]}));
+                });
+            });
+            let labels: Vec<_> = output.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text()),
+                _ => None,
+            }).collect();
+            assert!(labels.iter().filter(|&&s| s == "未知").count() >= 2);
+            assert!(!labels.contains(&"未达标") && !labels.contains(&"×"));
+        }
+    }
+}
+
 fn draw_detail_panel(ui: &mut egui::Ui, raw: &serde_json::Value) {
     let g = |k: &str| -> String {
         match raw.get(k) {
@@ -601,14 +629,14 @@ fn draw_detail_panel(ui: &mut egui::Ui, raw: &serde_json::Value) {
         ui.add_space(6.0);
         ui.label(egui::RichText::new("达标判定").strong().color(theme::text()));
         for r in list {
-            let ok = r.get("complete").and_then(|x| x.as_bool()).unwrap_or(false);
+            let ok = r.get("complete").and_then(|x| x.as_bool());
             let reason = r.get("reason").and_then(|x| x.as_str()).unwrap_or("");
             mobile::row(ui, |ui| {
-                if ok {
-                    ui.colored_label(theme::ok(), "√");
-                } else {
-                    ui.colored_label(theme::err(), "×");
-                }
+                match ok {
+                    Some(true) => ui.colored_label(theme::ok(), "√"),
+                    Some(false) => ui.colored_label(theme::err(), "×"),
+                    None => ui.colored_label(theme::text_dim(), "未知"),
+                };
                 ui.label(reason);
             });
         }

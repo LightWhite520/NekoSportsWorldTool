@@ -14,7 +14,7 @@ pub struct RecordRow {
     pub total_dis: f64,
     pub total_time: i64,
     pub start_time: i64,
-    pub complete: bool,
+    pub complete: Option<bool>,
     pub avg_step_freq: i64,
     #[serde(default)]
     pub calorie: i64,
@@ -49,7 +49,7 @@ pub fn fetch_records(client: &mut ApiClient) -> Result<Vec<RecordRow>, String> {
             total_dis: r.get("totalDis").and_then(|v| v.as_f64()).unwrap_or(0.0),
             total_time: r.get("totalTime").and_then(|v| v.as_i64()).unwrap_or(0),
             start_time: r.get("startTime").and_then(|v| v.as_i64()).unwrap_or(0),
-            complete: r.get("complete").and_then(|v| v.as_bool()).unwrap_or(false),
+            complete: r.get("complete").and_then(|v| v.as_bool()),
             avg_step_freq: r.get("avgStepFreq").and_then(|v| v.as_i64()).unwrap_or(0),
             calorie: r.get("calorie").and_then(|v| v.as_i64()).unwrap_or(0),
             avg_power: r.get("avgPower").and_then(|v| v.as_i64()).unwrap_or(0),
@@ -96,7 +96,7 @@ pub struct RunDetail {
     pub valid_time: i64,
     pub address: String,
     pub status_info: String,
-    pub complete: bool,
+    pub complete: Option<bool>,
     pub reason_list: Vec<ReasonItem>,
     pub start_time: i64,
 }
@@ -105,12 +105,16 @@ pub struct RunDetail {
 #[serde(rename_all = "camelCase")]
 pub struct ReasonItem {
     pub reason: String,
-    pub complete: bool,
+    pub complete: Option<bool>,
 }
 
 /// 拉取单条详情并解析为结构体。
 pub fn fetch_detail(client: &mut ApiClient, rrid: i64) -> Result<RunDetail, String> {
     let raw = fetch_one_record(client, rrid)?;
+    parse_detail(&raw, rrid)
+}
+
+fn parse_detail(raw: &Value, rrid: i64) -> Result<RunDetail, String> {
     if let Some(id) = raw.get("rrid") {
         if id.as_i64().or_else(|| id.as_str()?.parse().ok()) != Some(rrid) {
             return Err("详情返回的记录编号与请求不一致，请刷新重试".into());
@@ -123,7 +127,7 @@ pub fn fetch_detail(client: &mut ApiClient, rrid: i64) -> Result<RunDetail, Stri
             arr.iter()
                 .map(|r| ReasonItem {
                     reason: r.get("reason").and_then(|v| v.as_str()).unwrap_or("").into(),
-                    complete: r.get("complete").and_then(|v| v.as_bool()).unwrap_or(false),
+                    complete: r.get("complete").and_then(|v| v.as_bool()),
                 })
                 .collect()
         })
@@ -145,7 +149,7 @@ pub fn fetch_detail(client: &mut ApiClient, rrid: i64) -> Result<RunDetail, Stri
         valid_time: raw.get("validTime").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64,
         address: raw.get("address").and_then(|v| v.as_str()).unwrap_or("").into(),
         status_info: raw.get("statusInfo").and_then(|v| v.as_str()).unwrap_or("").into(),
-        complete: raw.get("complete").and_then(|v| v.as_bool()).unwrap_or(false),
+        complete: raw.get("complete").and_then(|v| v.as_bool()),
         reason_list: reasons,
         start_time: raw.get("startTime").and_then(|v| v.as_i64()).unwrap_or(0),
     })
@@ -156,13 +160,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn absent_or_malformed_completion_stays_unknown() {
+        for raw in [json!({}), json!({"complete":null}), json!({"complete":"false"})] {
+            let detail = parse_detail(&raw, 42).unwrap();
+            assert_eq!(detail.complete, None);
+            assert!(serde_json::to_value(detail).unwrap()["complete"].is_null());
+        }
+        let detail = parse_detail(&json!({"complete":false,"reasonList":[
+            {"reason":"待核对"}, {"reason":"通过","complete":true}, {"reason":"失败","complete":false}
+        ]}), 42).unwrap();
+        assert_eq!(detail.complete, Some(false));
+        assert_eq!(detail.reason_list.iter().map(|r| r.complete).collect::<Vec<_>>(), vec![None,Some(true),Some(false)]);
+        assert!(parse_detail(&json!({"rrid":43}), 42).is_err());
+        let row: RecordRow = serde_json::from_value(json!({
+            "rrid":42,"total_dis":0.,"total_time":0,"start_time":0,"avg_step_freq":0
+        })).unwrap();
+        assert_eq!(row.complete, None);
+    }
+
+    #[test]
     fn test_detail_serializes_camel_case() {
         let d = RunDetail {
             rrid: 42,
             total_dis: 1234.0,
             valid_dis: 1200.0,
             status_info: "有效".into(),
-            reason_list: vec![ReasonItem { reason: "里程达标".into(), complete: true }],
+            reason_list: vec![ReasonItem { reason: "里程达标".into(), complete: Some(true) }],
             start_time: 1_700_000_000_000,
             ..Default::default()
         };

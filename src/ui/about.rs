@@ -39,11 +39,7 @@ impl App {
         ui.heading("NekoSportsWorldTool");
         ui.add_space(6.0);
         ui.label(format!("当前版本：v{}", crate::platform::version_name()));
-        let repo = if cfg!(target_os = "android") {
-            crate::update::REPO_FORK
-        } else {
-            crate::update::REPO_UPSTREAM
-        };
+        let repo = crate::update::REPO_RELEASES;
         ui.hyperlink_to(
             egui::RichText::new(format!("https://github.com/{repo}/releases")).color(theme::text_dim()),
             format!("https://github.com/{repo}/releases"),

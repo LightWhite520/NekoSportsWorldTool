@@ -1,11 +1,10 @@
 //! School-scoped public OSM download. No account credentials are sent to Overpass.
 use route_planner::RoadGraph;
 use sha2::{Digest, Sha256};
-use std::{io::Read, path::Path, time::Duration};
+use std::path::Path;
 
 const MAX_BYTES: u64 = 24 * 1024 * 1024;
 const TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-const ENDPOINT: &str = "https://overpass-api.de/api/interpreter";
 
 pub fn validate_fences(fences: &[Vec<(f64, f64)>]) -> Result<(), String> {
     if fences.is_empty() {
@@ -34,13 +33,7 @@ pub fn validate_fences(fences: &[Vec<(f64, f64)>]) -> Result<(), String> {
 
 // Invert the same forward transform used to align roads, avoiding mixed coordinate systems.
 pub fn to_wgs(lat: f64, lon: f64) -> (f64, f64) {
-    let (mut y, mut x) = (lat, lon);
-    for _ in 0..16 {
-        let (by, bx) = crate::track::geom::wgs84_to_bd09(y, x);
-        y += lat - by;
-        x += lon - bx;
-    }
-    (y, x)
+    crate::track::geom::bd09_to_wgs84(lat, lon)
 }
 
 fn query(fences: &[Vec<(f64, f64)>]) -> Result<String, String> {
@@ -75,7 +68,7 @@ fn query_coordinates(points: &[(f64, f64)], margin: f64) -> Result<String, Strin
         north + margin,
         east + margin
     );
-    Ok(format!("[out:xml][timeout:25];(way[highway]({bbox});way[building]({bbox});relation[building]({bbox}););(._;>;);out body;"))
+    Ok(format!("[out:xml][timeout:25];(way[highway]({bbox});way[leisure=track]({bbox});way[sport~\"^(running|athletics)$\"]({bbox});way[building]({bbox});relation[building]({bbox}););(._;>;);out body;"))
 }
 
 fn parse(bytes: &[u8]) -> Result<RoadGraph, String> {
@@ -100,26 +93,21 @@ fn parse(bytes: &[u8]) -> Result<RoadGraph, String> {
     Ok(net)
 }
 
-fn download(query: &str) -> Result<Vec<u8>, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(45))
-        .build();
-    let response = agent
-        .post(ENDPOINT)
-        .set("User-Agent", "NekoSportsWorldTool/0.3.0 (school-road-map)")
-        .send_form(&[("data", query)])
-        .map_err(|e| format!("自动获取学校路网失败：{e}"))?;
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .take(MAX_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("读取学校路网失败：{e}"))?;
-    Ok(bytes)
+fn download(query: &str, control: &crate::task_control::Control) -> Result<Vec<u8>, String> {
+    // Only this module's generated bounding-box query is accepted here.
+    let raw = query.strip_prefix("[out:xml][timeout:25];(way[highway](")
+        .and_then(|s| s.split_once(')').map(|p| p.0))
+        .ok_or("无法确定学校路网备用下载范围")?;
+    let coords: Vec<f64> = raw.split(',').map(str::parse)
+        .collect::<Result<_, _>>().map_err(|_| "学校路网下载范围无效")?;
+    let bounds = super::osm_download::Bounds(coords.try_into().map_err(|_| "学校路网下载范围无效")?);
+    super::osm_download::download(query, bounds, MAX_BYTES, || control.check())
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Cache {
+    #[serde(default)]
+    version: u32,
     key: String,
     loaded_ms: i64,
     xml: String,
@@ -172,7 +160,10 @@ fn cached_route_network(
     {
         if let Ok(text) = std::fs::read_to_string(&file) {
             if let Ok(cache) = serde_json::from_str::<Cache>(&text) {
-                if cache.key == key && (0..TTL_MS).contains(&(now - cache.loaded_ms)) {
+                if cache.version == 2
+                    && cache.key == key
+                    && (0..TTL_MS).contains(&(now - cache.loaded_ms))
+                {
                     if let Ok(net) = parse(cache.xml.as_bytes()) {
                         log("[road] 使用当前学校及下载范围对应的路网缓存");
                         return Ok(net);
@@ -195,6 +186,7 @@ fn cached_route_network(
         return Err("下载的路网在学校围栏内没有可用道路，不能向校外补足距离".into());
     }
     let cache = Cache {
+        version: 2,
         key,
         loaded_ms: now,
         xml: String::from_utf8(bytes).map_err(|e| e.to_string())?,
@@ -360,7 +352,7 @@ pub fn load_for_school_cancellable(
         crate::crypto::envelope::now_ms(),
         |q| {
             control.check()?;
-            let bytes = download(q)?;
+            let bytes = download(q, control)?;
             control.check()?;
             Ok(bytes)
         },
@@ -393,7 +385,7 @@ pub fn load_for_route_cancellable(
         crate::crypto::envelope::now_ms(),
         |q| {
             control.check()?;
-            let bytes = download(q)?;
+            let bytes = download(q, control)?;
             control.check()?;
             Ok(bytes)
         },

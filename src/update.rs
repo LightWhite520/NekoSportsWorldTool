@@ -1,15 +1,12 @@
 //! 自动更新：GitHub Release 检查 / 下载 / 解包 / 自替换。
 //!
-//! 桌面产物（win zip / mac tar.gz / linux tar.gz ×2）只查上游仓库；
-//! Android 查上游 + fork 两个仓库（上游发 APK 前先落在 fork，发了则
-//! 自动取更新的那个），取带 APK 资产且版本最新的 Release。
+//! 各平台均从本项目发布仓库查询与当前平台匹配的 Release 产物。
 //! NSWT_UPDATE_REPO 环境变量可强制指定仓库（测试用）。
 //! 版本号 / 重启 / 安装的平台差异见 platform.rs。
 
 use crate::api::client::{make_agent, ureq_err};
 
-pub const REPO_UPSTREAM: &str = "YanamiNeko/NekoSportsWorldTool";
-pub const REPO_FORK: &str = "hb-degithub/NekoSportsWorldTool";
+pub const REPO_RELEASES: &str = "LightWhite520/NekoSportsWorldTool";
 
 const UA: &str = concat!("NekoSportsWorldTool/", env!("CARGO_PKG_VERSION"));
 
@@ -23,20 +20,21 @@ fn repos() -> Vec<String> {
             return vec![r.trim().to_string()];
         }
     }
-    #[cfg(target_os = "android")]
-    let list = [REPO_UPSTREAM, REPO_FORK];
-    #[cfg(not(target_os = "android"))]
-    let list = [REPO_UPSTREAM];
-    list.iter().map(|s| s.to_string()).collect()
+    vec![REPO_RELEASES.to_string()]
 }
 
 /// 当前平台对应的 Release 资产名；无匹配产物的平台返回 None。
 pub fn asset_name() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
+    platform_asset(std::env::consts::OS, std::env::consts::ARCH, cfg!(feature = "gui"))
+}
+
+fn platform_asset(os: &str, arch: &str, gui: bool) -> Option<&'static str> {
+    match (os, arch) {
         ("windows", "x86_64") => Some("NekoSportsWorldTool-win-x64.zip"),
         ("macos", "aarch64") => Some("NekoSportsWorldTool-macos-arm64.tar.gz"),
+        ("linux", "x86_64") if gui => Some("NekoSportsWorldTool-linux-x64-gui.tar.gz"),
         ("linux", "x86_64") => Some("NekoSportsWorldTool-linux-x64.tar.gz"),
-        ("linux", "aarch64") => Some("NekoSportsWorldTool-linux-aarch64.tar.gz"),
+        ("linux", "aarch64") if !gui => Some("NekoSportsWorldTool-linux-aarch64.tar.gz"),
         ("android", "aarch64") => Some("NekoSportsWorldTool-android-arm64.apk"),
         _ => None,
     }
@@ -60,7 +58,7 @@ pub struct ReleaseInfo {
 }
 
 /// 检查最新 Release；比当前新返回 Some，已是最新返回 None。
-/// 多仓库（Android）时取带资产且版本最新的候选。
+/// 只接受包含当前平台资产的 Release。
 pub fn check_latest(log: &mut dyn FnMut(&str)) -> Result<Option<ReleaseInfo>, String> {
     let want = asset_name().ok_or_else(|| "当前平台没有对应的发布产物，无法自动更新".to_string())?;
     let current = current_version();
@@ -290,6 +288,12 @@ pub fn apply(binary: &[u8]) -> Result<(), String> {
     let file = exe.file_name().and_then(|n| n.to_str()).ok_or("exe 文件名异常")?;
     let new = dir.join(format!("{file}.new"));
     let old = dir.join(format!("{file}.old"));
+    #[cfg(target_os = "macos")]
+    let old = exe.ancestors()
+        .find(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .and_then(|bundle| bundle.parent())
+        .map(|parent| parent.join(format!(".neko-update-{}.old", std::process::id())))
+        .unwrap_or(old);
     {
         use std::io::Write;
         let mut f = std::fs::File::create(&new)
@@ -311,6 +315,27 @@ pub fn apply(binary: &[u8]) -> Result<(), String> {
     if let Err(e) = std::fs::rename(&new, &exe) {
         let _ = std::fs::rename(&old, &exe);
         return Err(format!("替换程序失败: {e}"));
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = exe.ancestors().find(|path| path.extension().is_some_and(|ext| ext == "app")) {
+        // The release is an ad-hoc signed app bundle. Replacing its executable
+        // invalidates the bundle seal; restore it before relaunching.
+        let signed = std::process::Command::new("/usr/bin/codesign")
+            .args(["--force", "--deep", "--sign", "-"])
+            .arg(bundle)
+            .status();
+        if !signed.is_ok_and(|status| status.success()) {
+            let _ = std::fs::remove_file(&exe);
+            std::fs::rename(&old, &exe).map_err(|error| format!("应用签名失败且回滚失败：{error}"))?;
+            let _ = std::process::Command::new("/usr/bin/codesign")
+                .args(["--force", "--deep", "--sign", "-"])
+                .arg(bundle)
+                .status();
+            return Err("macOS 应用签名失败，已恢复旧程序；请下载新的应用包".into());
+        }
+        // Keep rollback files outside the signed bundle, then remove them once
+        // signing succeeds; deleting sealed resources would invalidate it again.
+        let _ = std::fs::remove_file(&old);
     }
     Ok(())
 }
@@ -361,6 +386,10 @@ mod tests {
         assert_eq!(exact.unwrap().name, "NekoSportsWorldTool-win-x64.zip");
         // 桌面产物必须精确匹配
         assert!(pick_asset(&mk(&["wrong.zip"]), "NekoSportsWorldTool-win-x64.zip").is_none());
+        let linux_gui = platform_asset("linux", "x86_64", true).unwrap();
+        let linux_cli = platform_asset("linux", "x86_64", false).unwrap();
+        assert!(pick_asset(&mk(&[linux_cli]), linux_gui).is_none());
+        assert_eq!(pick_asset(&mk(&[linux_cli, linux_gui]), linux_gui).unwrap().name, linux_gui);
         // APK 模糊匹配：先精确、再 arm64、再任意 apk
         let apk = pick_asset(&mk(&["NekoSportsWorldTool-0.2.5-android.2-arm64.apk"]), "NekoSportsWorldTool-android-arm64.apk");
         assert_eq!(apk.unwrap().name, "NekoSportsWorldTool-0.2.5-android.2-arm64.apk");

@@ -77,6 +77,8 @@ pub struct RunPage {
     pub dist_max: f32,
     pub pace_min: f32,
     pub pace_max: f32,
+    pub motion_variation: f32,
+    pub drift_variation: f32,
     /// 手动绝对海拔（米）；空白表示使用生成器默认海拔。
     pub manual_altitude: String,
     /// 0=随机时刻 1=指定时刻
@@ -89,6 +91,7 @@ pub struct RunPage {
     pub plan: Option<RunPlan>,
     /// 路线算法模式
     pub route_mode: RouteMode,
+    pub track_editor: super::track_editor::Editor,
     /// 地图视图状态
     pub map: MapState,
     /// 路网预览（真实道路路由）
@@ -280,6 +283,7 @@ impl RunPage {
 impl App {
     pub fn draw_run(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
+            .id_salt(("run_page", self.run_review.is_some(), std::sync::Arc::as_ptr(&self.run_control) as usize))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 self.draw_run_content(ui);
@@ -287,6 +291,19 @@ impl App {
     }
 
     fn draw_run_content(&mut self, ui: &mut egui::Ui) {
+        if self.run_review.is_some() {
+            self.draw_run_review(ui);
+            return;
+        }
+        if self.run_busy {
+            ui.spinner();
+            ui.label(&self.status);
+            if self.run_control.cancellable() && ui.button("取消准备/轨迹生成").clicked() {
+                self.run_control.cancel();
+                self.status = "已请求取消，等待当前任务结束…".into();
+            }
+            return;
+        }
         let prev_route = self.run_page.route_mode;
         {
             let page = &mut self.run_page;
@@ -351,6 +368,8 @@ impl App {
                     draw_pace_inputs(ui);
                 });
             }
+            draw_motion_variation(ui, &mut page.motion_variation);
+            draw_drift_variation(ui, &mut page.drift_variation);
             mobile::row(ui, |ui| {
                 ui.label("手动海拔（米/区间）：");
                 mobile::text_edit(
@@ -414,14 +433,18 @@ impl App {
                 ui.label("路线算法：");
                 ui.selectable_value(&mut page.route_mode, RouteMode::Legacy, "经典打卡点环");
                 ui.selectable_value(&mut page.route_mode, RouteMode::Road, "真实道路路由");
-                if page.route_mode == RouteMode::Road && self.network.is_none() {
+                ui.selectable_value(&mut page.route_mode, RouteMode::Track, "跑道路线（规整）");
+                if page.route_mode.uses_network() && self.network.is_none() {
                     ui.colored_label(theme::warn(), "（正在按学校获取，可到路网页查看）");
                 }
             });
+            if page.route_mode == RouteMode::Track {
+                ui.label("闭环跑道按标准单道宽 1.22 米，在相邻道间平滑换道。请核对预览位于跑道内。");
+            }
         }
 
         // 切换到真实道路路由时按需拉取电子围栏与实时点位（经典模式不触发这些端点）。
-        if self.run_page.route_mode == RouteMode::Road && prev_route != RouteMode::Road {
+        if self.run_page.route_mode.uses_network() && !prev_route.uses_network() {
             self.refresh_points();
         }
 
@@ -479,7 +502,7 @@ impl App {
         let btn = if self.run_busy {
             theme::primary_btn("提交中…")
         } else {
-            theme::primary_btn("开始跑步")
+            theme::primary_btn("生成数据并预览")
         };
         mobile::row(ui, |ui| {
             if ui.add_enabled(enabled, btn).clicked() {
@@ -528,7 +551,11 @@ impl App {
     }
 
     fn draw_run_map(&mut self, ui: &mut egui::Ui) {
-        if self.run_page.route_mode != RouteMode::Road {
+        if !self.run_page.route_mode.uses_network() {
+            if self.config.track_enabled {
+                self.config.track_enabled = false;
+                let _ = crate::api::model::save_config(&self.config);
+            }
             ui.label("经典模式仅按点位拟合，不包含建筑避让；需要沿道路行进时请选择真实道路模式。");
             return;
         }
@@ -607,6 +634,7 @@ impl App {
         if self.run_page.base_map_request.take().is_some() {
             self.run_page.map_fitted = false;
         }
+        self.draw_track_editor(ui, &net, &inputs);
         self.prepare_preview(ui, net.clone(), &inputs, &plan);
 
         if inputs.fences.is_empty() {
@@ -616,7 +644,12 @@ impl App {
             );
         }
 
-        if let Some(check) = &self.run_page.check {
+        if let Some(check) = self
+            .run_page
+            .check
+            .as_ref()
+            .filter(|_| !self.config.track_enabled)
+        {
             ui.label(format!(
                 "路线检查：{} 个道路连通分量；按当前顺序完整闭环最短距离 {}",
                 check.components,
@@ -630,11 +663,21 @@ impl App {
             }
         }
         if let Some(p) = &self.run_page.preview {
-            ui.label(format!(
-                "总距离 {:.2} km · 预计 {} 圈（返回起点计一圈，含末圈）",
-                plan.dist,
-                p.laps.len()
-            ));
+            if p.track_mode {
+                ui.label(format!(
+                    "连接段 {:.1} 米 · 参考线圈长 {:.1} 米 · 逆时针 {} 圈（含末段）",
+                    p.prefix_m,
+                    p.circuit_m,
+                    p.laps.len()
+                ));
+            }
+            if !p.track_mode {
+                ui.label(format!(
+                    "总距离 {:.2} km · 预计 {} 圈（返回起点计一圈，含末圈）",
+                    plan.dist,
+                    p.laps.len()
+                ));
+            }
             ui.label(format!(
                 "点位顺序：{}",
                 (1..=p.checkpoints.len())
@@ -735,6 +778,19 @@ impl App {
             self.run_page
                 .map
                 .draw_polyline(&painter, canvas, &p.route, route_c, 2.5);
+            if p.track_mode {
+                let end = p
+                    .arcs
+                    .partition_point(|s| *s <= p.prefix_m)
+                    .min(p.route.len());
+                self.run_page.map.draw_polyline(
+                    &painter,
+                    canvas,
+                    &p.route[..end],
+                    egui::Color32::from_rgb(200, 120, 30),
+                    3.,
+                );
+            }
             let cp = egui::Color32::from_rgb(240, 180, 0);
             for &(la, lo) in &p.checkpoints {
                 self.run_page
@@ -761,10 +817,11 @@ impl App {
                     4.5,
                 );
             }
-            if let Some(pos) = crate::track::route_view::position(
+            if let Some(pos) = crate::track::route_view::position_with_end(
                 &p.route,
                 &p.arcs,
                 plan.dist * 1000. * self.run_page.progress as f64,
+                p.track_mode || self.run_page.route_mode == RouteMode::Track,
             ) {
                 self.run_page.map.draw_point(
                     &painter,
@@ -775,7 +832,9 @@ impl App {
                     7.0,
                 );
             }
-            let label = if p.length_m > 0.0 {
+            let label = if self.run_page.route_mode == RouteMode::Track {
+                format!("本次方案 {:.2} km · {} 个轨迹点 · {} 打卡点", plan.dist, p.route.len(), p.checkpoints.len())
+            } else if p.length_m > 0.0 {
                 let loops = plan.dist * 1000.0 / p.length_m;
                 if loops > 1.15 {
                     format!(
@@ -896,7 +955,7 @@ impl App {
 
     fn start_run(&mut self) {
         if self.run_busy { return; }
-        if self.run_page.route_mode == RouteMode::Road && self.network.is_none() {
+        if self.run_page.route_mode.uses_network() && self.network.is_none() {
             self.status = "请先加载路网并刷新路线点位".into();
             return;
         }
@@ -923,18 +982,26 @@ impl App {
         let start_ms = plan.start_ms;
         let face_check = if page.face_check { 1 } else { 0 };
         let route_mode = page.route_mode;
+        let motion_variation = page.motion_variation as f64;
+        let drift_variation = page.drift_variation as f64;
+        if let Err(e) = crate::track::motion::validate_drift_variation(drift_variation) {
+            self.status = e;
+            return;
+        }
+        if let Err(e) = route_planner::motion::validate_variation(motion_variation) {
+            self.status = e;
+            return;
+        }
         self.config.dist_min = page.dist_min;
         self.config.dist_max = page.dist_max;
         self.config.pace_min = page.pace_min;
         self.config.pace_max = page.pace_max;
+        self.config.motion_variation = page.motion_variation;
+        self.config.drift_variation = page.drift_variation;
         self.config.face_check = page.face_check;
         self.config.manual_altitude = manual_altitude;
         self.config.manual_altitude_range = manual_altitude_range;
-        self.config.route_mode = if route_mode == RouteMode::Road {
-            "road".into()
-        } else {
-            "legacy".into()
-        };
+        self.config.route_mode = route_mode.as_str().into();
         let _ = crate::api::model::save_config(&self.config);
 
         let identity = self.identity.clone();
@@ -945,15 +1012,32 @@ impl App {
                 return;
             }
         };
+        let track_selection = if self.config.track_enabled {
+            let Some(s) = self.config.track_selection.clone().filter(|s| s.confirmed) else {
+                self.status = "请先确认跑道".into();
+                return;
+            };
+            if !route_mode.uses_network() {
+                self.status = "跑道模式需要真实道路路由".into();
+                return;
+            }
+            Some(s)
+        } else {
+            None
+        };
         self.run_busy = true;
+        self.run_review = None;
         self.run_control = std::sync::Arc::new(crate::task_control::Control::default());
         let control = self.run_control.clone();
-        self.status = "跑步提交中…".into();
+        let review_tx = self.run_review_tx.clone();
+        let epoch = self.session_epoch;
+        self.status = "正在生成预览数据…".into();
         let seed = plan.seed;
         self.spawn_job(move |tx| {
             let mut log = App::logger(tx.clone());
             let mut client = tx.client(identity, Some(session));
             let params = crate::api::flow::RunParams {
+                track_selection,
                 dist,
                 dur,
                 start_ms,
@@ -962,8 +1046,10 @@ impl App {
                 manual_altitude_range,
                 seed,
                 route_mode,
+                motion_variation,
+                drift_variation,
             };
-            let payload = match crate::api::flow::run_full_flow_cancellable(
+            let payload = match crate::api::flow::run_reviewed_flow_cancellable(
                 &mut client,
                 &params,
                 &mut |s| {
@@ -973,6 +1059,15 @@ impl App {
                     log(s);
                 },
                 &control,
+                &mut |track| {
+                    let data = crate::track::review::RunReview::from_track(track)?;
+                    let (decision, response) = std::sync::mpsc::channel();
+                    if review_tx.send(super::run_review::Request {
+                        epoch, control: control.clone(), data, decision,
+                        map: MapState::default(), map_size: egui::Vec2::ZERO,
+                    }).is_err() { return Ok(false); }
+                    super::run_review::wait_for_decision(response, &control)
+                },
             ) {
                 Ok(out) => {
                     log(&format!(
@@ -993,13 +1088,35 @@ impl App {
                     })
                 }
                 Err(e) => {
-                    log(&format!("跑步提交失败: {e}"));
-                    serde_json::json!({ "ok": false, "message": crate::road_status::explain(&e) })
+                    let cancelled = control.check().is_err() || e == crate::api::flow::RUN_CANCELLED;
+                    if cancelled { log(crate::api::flow::RUN_CANCELLED); }
+                    else { log(&format!("跑步任务失败: {e}")); }
+                    serde_json::json!({ "ok": false, "cancelled": cancelled, "message": crate::road_status::explain(&e) })
                 }
             };
             tx.send(format!("__RUN_DONE__{payload}")).ok();
         });
     }
+}
+
+pub(super) fn draw_motion_variation(ui: &mut egui::Ui, variation: &mut f32) {
+    mobile::row(ui, |ui| {
+        ui.label("随机波动强度：");
+        mobile::drag_f32(ui, "run_motion_variation", variation, 0.0..=5.0, 0.1, 1, " 倍");
+        if ui.small_button("恢复默认强度").clicked() {
+            *variation = 1.0;
+        }
+    });
+    ui.label("配速、步频和步幅联动；1 倍为默认强度，0 关闭额外随机波动，起停和转弯仍保留。");
+}
+
+pub(super) fn draw_drift_variation(ui: &mut egui::Ui, variation: &mut f32) {
+    mobile::row(ui, |ui| {
+        ui.label("路线漂移强度：");
+        mobile::drag_f32(ui, "run_drift_variation", variation, 0.0..=5.0, 0.1, 1, " 倍");
+        if ui.small_button("恢复默认漂移").clicked() { *variation = 1.0; }
+    });
+    ui.label("独立控制 GPS 漂移；0 关闭，1 为默认幅度。漂移受围栏限制，跑道换道单独计算。");
 }
 
 #[cfg(test)]

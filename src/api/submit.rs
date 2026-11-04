@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 
 pub const RECORD_PATH: &str = "/api/v70260/runnings/save/record";
 
-/// Record pace uses thousandths of a minute/km; OBS laps use seconds/km.
+/// Record pace uses thousandths of a minute/km; OBS laps use decimal minutes/km.
 fn pace_speed_value(seconds: i64, meters: f64) -> i64 {
     let distance = (meters * 100.0).ceil() / 100.0;
     (seconds as f64 / 60.0 / (distance / 1000.0) * 1000.0).round() as i64
@@ -336,5 +336,6 @@ mod metric_tests {
     fn record_pace_has_decimal_protocol_scale() {
         assert_eq!(pace_speed_value(600, 1000.0), 10000);
         assert_eq!(pace_speed_value(720, 2000.0), 6000);
+        assert_eq!(pace_speed_value(402, 1000.0), 6700);
     }
 }

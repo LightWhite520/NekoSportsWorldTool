@@ -5,7 +5,6 @@ use super::{
     SEMESTER, UPDATE_CHK, UPDATE_DONE, UPDATE_PROG, USER,
 };
 use crate::api::model;
-use crate::track::generate_road::RouteMode;
 use crate::update::ReleaseInfo;
 
 impl App {
@@ -89,19 +88,21 @@ impl App {
     }
 
     pub(crate) fn refresh_school_route(&mut self, force: bool) {
-        if self.run_page.route_mode != RouteMode::Road {
+        if !self.run_page.route_mode.uses_network() {
             return;
         }
         let Some(session) = self.session.clone() else {
             if !self.config.osm_path.is_empty() {
                 self.load_osm_async(self.config.osm_path.clone());
+            } else if !self.config.road_cache_path.is_empty() {
+                self.restore_road_cache(self.config.road_cache_path.clone());
             } else {
                 self.osm_page.status = "请先登录，才能获取学校路网".into();
             }
             return;
         };
         // Metadata refresh must not discard an already parsed manual map.
-        let manual_network = if !self.config.osm_path.is_empty() {
+        let manual_network = if !self.config.manual_road_path().is_empty() {
             self.network.clone()
         } else {
             None
@@ -117,7 +118,7 @@ impl App {
             anchor,
             session.token.clone(),
         ));
-        let path = self.config.osm_path.clone();
+        let path = self.config.manual_road_path().to_owned();
         let selection = self.config.school_campus.clone();
         let control = self.osm_page.cancel.clone();
         let net_tx = self.net_tx.clone();
@@ -146,6 +147,7 @@ impl App {
                         std::sync::Arc::new(crate::track::generate_road::load_network_path(&path)?);
                     loaded = Some(net.clone());
                     let _ = net_tx.send(super::osm::NetworkLoad {
+                        source: None,
                         pending: true,
                         warning: "本地路网已读取；正在获取学校围栏与点位…".into(),
                         offline: false,
@@ -203,6 +205,7 @@ impl App {
                 control.check()?;
                 if let Some(network) = &loaded {
                     let _ = net_tx.send(super::osm::NetworkLoad {
+                        source: None,
                         pending: true,
                         warning: "路网已读取；正在刷新路线点位…".into(),
                         offline: false,
@@ -220,7 +223,12 @@ impl App {
                 stage("获取当前学校策略与路线点位…");
                 let policy = crate::api::policy::fetch_policy(&mut client)?;
                 control.check()?;
-                let pts = crate::api::points::fetch_points_ext(
+                let fetch_points = if force {
+                    crate::api::points::fetch_points_fresh_ext
+                } else {
+                    crate::api::points::fetch_points_ext
+                };
+                let pts = fetch_points(
                     &mut client,
                     anchor,
                     run_area_id,
@@ -276,6 +284,7 @@ impl App {
             })();
             let (result, warning) = finish_road_load(loaded, result);
             let _ = net_tx.send(super::osm::NetworkLoad {
+                source: None,
                 pending: false,
                 warning,
                 offline: false,

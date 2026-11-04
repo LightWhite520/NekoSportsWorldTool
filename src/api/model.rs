@@ -61,6 +61,12 @@ pub struct Config {
     pub pace_min: f32,
     #[serde(default = "default_pace_max")]
     pub pace_max: f32,
+    /// 配速、步频与步幅共用的波动强度；0 关闭额外噪声，1 为默认强度。
+    #[serde(default = "default_motion_variation")]
+    pub motion_variation: f32,
+    /// 独立的路线漂移强度；0 关闭漂移，1 为默认幅度。
+    #[serde(default = "default_motion_variation")]
+    pub drift_variation: f32,
     #[serde(default)]
     pub face_check: bool,
     /// 跑步时覆盖轨迹点 bdA；为空表示使用生成器的海拔曲线。
@@ -76,12 +82,19 @@ pub struct Config {
     /// 启动时检查更新：silent（静默，发现新版才弹窗）/ ask（每次询问）/ off
     #[serde(default = "default_update_check")]
     pub update_check: String,
-    /// OSM 路网文件路径（真实道路路由用）。
+    /// 本地导入的 OSM 文件；与在线缓存互斥，记录最近成功加载的来源。
     #[serde(default)]
     pub osm_path: String,
+    /// 已在线下载的路网缓存。
+    #[serde(default)]
+    pub road_cache_path: String,
     /// 路线算法：legacy | road。
     #[serde(default = "default_route_mode")]
     pub route_mode: String,
+    #[serde(default)]
+    pub track_enabled: bool,
+    #[serde(default)]
+    pub track_selection: Option<crate::track::selection::TrackSelection>,
 }
 
 fn default_route_mode() -> String {
@@ -89,6 +102,9 @@ fn default_route_mode() -> String {
 }
 
 fn default_f32() -> f32 {
+    1.0
+}
+fn default_motion_variation() -> f32 {
     1.0
 }
 fn default_pace_min() -> f32 {
@@ -107,6 +123,13 @@ fn default_update_check() -> String {
     "silent".into()
 }
 
+impl Config {
+    /// Explicit local import or map-selected download takes precedence over automatic school roads.
+    pub fn manual_road_path(&self) -> &str {
+        if self.osm_path.is_empty() { &self.road_cache_path } else { &self.osm_path }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -118,6 +141,8 @@ impl Default for Config {
             dist_max: 1.5,
             pace_min: default_pace_min(),
             pace_max: default_pace_max(),
+            motion_variation: default_motion_variation(),
+            drift_variation: default_motion_variation(),
             face_check: true,
             manual_altitude: None,
             manual_altitude_range: None,
@@ -125,7 +150,10 @@ impl Default for Config {
             ai_reps: default_ai_reps(),
             update_check: default_update_check(),
             osm_path: String::new(),
+            road_cache_path: String::new(),
             route_mode: default_route_mode(),
+            track_enabled: false,
+            track_selection: None,
         }
     }
 }
@@ -404,6 +432,8 @@ struct PointsCache {
     anchor: crate::location::Coordinate,
     scope: PointsCacheScope,
     points: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    response_context: Option<super::points::ResponseContext>,
 }
 
 impl PointsCache {
@@ -442,11 +472,21 @@ pub fn save_points_cache(
     scope: &PointsCacheScope,
     points: &[serde_json::Value],
 ) -> Result<(), String> {
+    save_points_cache_with_context(anchor, scope, points, None)
+}
+
+pub(crate) fn save_points_cache_with_context(
+    anchor: crate::location::Coordinate,
+    scope: &PointsCacheScope,
+    points: &[serde_json::Value],
+    response_context: Option<super::points::ResponseContext>,
+) -> Result<(), String> {
     let doc = PointsCache {
         ts: crate::crypto::envelope::now_ms(),
         anchor,
         scope: scope.clone(),
         points: points.to_vec(),
+        response_context,
     };
     write_json("points_cache.json", &doc)
 }
@@ -457,6 +497,7 @@ mod points_cache_tests {
     #[test]
     fn cache_is_scoped_to_anchor() {
         let cache = PointsCache {
+            response_context: None,
             ts: 1,
             anchor: crate::location::Coordinate::new(39.9, 116.4, 0.0).unwrap(),
             scope: PointsCacheScope {

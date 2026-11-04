@@ -10,6 +10,8 @@ use chrono::TimeZone;
 
 impl App {
     fn expire_road_session(&mut self) {
+        self.run_control.cancel();
+        self.run_review = None;
         self.session_epoch = self.session_epoch.wrapping_add(1);
         self.auth_guard
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -79,6 +81,7 @@ impl App {
 
     pub(crate) fn poll_messages(&mut self) {
         self.poll_preview_results();
+        self.poll_run_reviews();
         let mut done_ip = None;
         let mut done_login = None;
         let mut done_run = None;
@@ -210,12 +213,12 @@ impl App {
                 && res.scope.is_none()
                 && res.inputs.is_none()
                 && res.result.is_ok()
-                && !self.config.osm_path.is_empty()
+                && (res.source.is_some() || !self.config.manual_road_path().is_empty())
                 && self
                     .session
                     .as_ref()
                     .is_some_and(model::Session::is_logged_in)
-                && self.run_page.route_mode == crate::track::generate_road::RouteMode::Road;
+                && self.run_page.route_mode.uses_network();
             self.osm_page.busy = res.pending;
             let expired = res.scope.is_some()
                 && (crate::api::client::is_session_expired(&res.warning)
@@ -249,6 +252,21 @@ impl App {
             }
             match res.result {
                 Ok(net) => {
+                    if let Some(source) = &res.source {
+                        match source {
+                            super::osm::RoadSource::Local(path) => {
+                                self.config.osm_path = path.clone();
+                                self.config.road_cache_path.clear();
+                            }
+                            super::osm::RoadSource::Online(path) => {
+                                self.config.osm_path.clear();
+                                self.config.road_cache_path = path.clone();
+                            }
+                        }
+                        if let Err(error) = model::save_config(&self.config) {
+                            self.log.push(&format!("路网已加载，但配置保存失败：{error}"));
+                        }
+                    }
                     let nodes = net.graph.node_count();
                     let bld = net.buildings.len();
                     self.osm_page.fitted = false;
@@ -267,7 +285,7 @@ impl App {
                     self.analyze_gpx();
                 }
                 Err(e) => {
-                    self.network = None;
+                    if res.source.is_none() { self.network = None; }
                     self.run_page.preview = None;
                     self.run_page.preview_stale = true;
                     self.osm_page.status = crate::road_status::explain(&e);
@@ -349,8 +367,11 @@ impl App {
         }
         if let Some(v) = done_run {
             self.run_busy = false;
+            self.run_review = None;
             let val: serde_json::Value = serde_json::from_str(&v).unwrap_or_default();
-            if val.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
+            if val["cancelled"] == true {
+                self.status = crate::api::flow::RUN_CANCELLED.into();
+            } else if val.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
                 self.status = format!(
                     "跑步提交成功 rrid={}（OBS {}/2）",
                     val["rrid"].as_i64().unwrap_or(0),
