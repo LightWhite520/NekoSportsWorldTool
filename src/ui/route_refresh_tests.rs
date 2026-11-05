@@ -139,6 +139,97 @@ fn wire_point(lat: f64, lon: f64) -> Value {
     json!({"lat":format!("{lat:.10}"), "lon":format!("{lon:.10}")})
 }
 
+fn area_policy(valid: bool, ambiguous: bool) -> Value {
+    let fence = json!({"id":701,"points":[
+        wire_point(39.899,116.399),wire_point(39.902,116.399),
+        wire_point(39.902,116.402),wire_point(39.899,116.402)
+    ]});
+    let mut areas = vec![json!({"id":73,"name":"测试跑道区域","valid":valid,"fenceIds":[701]})];
+    if ambiguous { areas.push(json!({"id":74,"name":"另一个跑区","valid":true,"fenceIds":[701]})); }
+    json!({"error":10000,"data":{"timestamp":123,"policy":1,"runRuleModel":{"minDistance":1000},
+        "runAreaModels":areas,"geoFence":{"geoFences":[fence]}}})
+}
+
+#[test]
+fn policy_area_refresh_scopes_points_and_expired_area_blocks_next_request() {
+    let root = FixtureDir::new();
+    let live = vec![wire_point(39.9,116.4)];
+    let (host,server) = mock_school(vec![
+        (crate::api::fence::FENCE_PATH,json!({"error":10000,"data":{"geoFences":[]}})),
+        (crate::api::policy::POLICY_PATH,area_policy(true,false)),
+        ("/api/v560/get/1/distance/1000",json!({"error":10000,"data":{"pointsResModels":live}})),
+        (crate::api::fence::FENCE_PATH,json!({"error":10000,"data":{"geoFences":[]}})),
+        (crate::api::policy::POLICY_PATH,area_policy(false,false)),
+    ]);
+    let ctx = egui::Context::default();
+    let mut app = fixture_app(&root,&ctx,host);
+    let scope = crate::api::model::PointsCacheScope { uid:42,unid:"77".into(),run_area_id:None, distance_m:1000 };
+    crate::api::model::save_points_cache(app.identity.anchor_coordinate().unwrap(),&scope,&[wire_point(39.901,116.401)]).unwrap();
+    app.refresh_school_route(false);
+    wait_for_refresh(&mut app);
+    let inputs = app.run_page.preview_inputs.as_ref().expect("policy area preview");
+    assert_eq!(inputs.fences.len(),1);
+    assert_eq!(inputs.points, crate::api::points::points_bd(&live));
+    assert_eq!(app.osm_page.campuses[0].name,"测试跑道区域");
+    let cached: Value = serde_json::from_slice(&std::fs::read(root.0.join("points_cache.json")).unwrap()).unwrap();
+    assert_eq!(cached["scope"]["run_area_id"],73);
+    let selection = app.config.school_campus.as_mut().unwrap();
+    selection.confirmed = true;
+    let p = crate::api::policy::parse_response(&area_policy(true,false)).unwrap();
+    let selected = crate::api::campus::selected_response(p.geo_fence.unwrap(),&p.run_areas,Some(selection),"77").unwrap();
+    assert_eq!(selected.area.run_area_id,73,"formal preparation and preview must use the same area");
+    app.refresh_school_route(false);
+    wait_for_refresh(&mut app);
+    assert_eq!(server.join().unwrap(),5,"invalid area must not request points, even with a cache");
+    assert!(app.run_page.preview_inputs.is_none());
+    assert!(app.osm_page.status.contains("无效"),"{}",app.osm_page.status);
+}
+
+#[test]
+fn overlapping_policy_areas_require_selection_before_requesting_points() {
+    let root = FixtureDir::new();
+    let (host,server) = mock_school(vec![
+        (crate::api::fence::FENCE_PATH,json!({"error":10000,"data":{"geoFences":[]}})),
+        (crate::api::policy::POLICY_PATH,area_policy(true,true)),
+    ]);
+    let ctx = egui::Context::default();
+    let mut app = fixture_app(&root,&ctx,host);
+    app.refresh_school_route(false);
+    wait_for_refresh(&mut app);
+    assert_eq!(server.join().unwrap(),2);
+    assert_eq!(app.osm_page.campuses.len(),2);
+    assert!(app.osm_page.selected_key.is_empty());
+    assert!(app.run_page.preview_inputs.is_none());
+    assert!(!root.0.join("points_cache.json").exists());
+    assert!(app.osm_page.status.contains("选择"),"{}",app.osm_page.status);
+}
+
+#[test]
+fn explicit_policy_area_choice_wins_over_overlapping_geometry() {
+    let root = FixtureDir::new();
+    let policy = area_policy(true,true);
+    let p = crate::api::policy::parse_response(&policy).unwrap();
+    let list = crate::api::campus::catalog_with_areas(p.geo_fence.as_ref().unwrap(),&p.run_areas).unwrap();
+    let (host,server) = mock_school(vec![
+        (crate::api::fence::FENCE_PATH,json!({"error":10000,"data":{"geoFences":[]}})),
+        (crate::api::policy::POLICY_PATH,policy),
+        ("/api/v560/get/1/distance/1000",json!({"error":10000,"data":{"pointsResModels":[wire_point(39.9,116.4)]}})),
+    ]);
+    let ctx = egui::Context::default();
+    let mut app = fixture_app(&root,&ctx,host);
+    app.config.school_campus = Some(crate::api::campus::Selection {
+        school:"77".into(),key:list[1].key.clone(),confirmed:false,
+    });
+    app.refresh_school_route(false);
+    wait_for_refresh(&mut app);
+    assert_eq!(server.join().unwrap(),3);
+    assert!(app.run_page.preview_inputs.is_some());
+    assert_eq!(app.osm_page.selected_key,list[1].key);
+    let cached: Value = serde_json::from_slice(&std::fs::read(root.0.join("points_cache.json")).unwrap()).unwrap();
+    assert_eq!(cached["scope"]["run_area_id"],74);
+    assert!(!app.config.school_campus.as_ref().unwrap().confirmed,"preview never confirms on the user's behalf");
+}
+
 #[test]
 fn fresh_points_bypass_scoped_cache_preserve_context_and_never_fallback_on_error() {
     use crate::api::{client::ApiClient, model, points};
@@ -146,28 +237,86 @@ fn fresh_points_bypass_scoped_cache_preserve_context_and_never_fallback_on_error
     let old = vec![wire_point(39.9, 116.4)];
     let fresh = vec![wire_point(39.901, 116.401)];
     let (host, server) = mock_school(vec![
-        (points::POINTS_PATH, json!({"error":10000,"data":{"result":{
+        ("/api/v560/get/1/distance/1000", json!({"error":10000,"data":{"result":{
             "runAreaId":73,"pointsModelList":fresh,"geoFences":[{"id":123,"points":[]}]
         }}})),
-        (points::POINTS_PATH, json!({"error":10603,"message":"fixture rate limit"})),
+        ("/api/v560/get/1/distance/1000", json!({"error":10603,"message":"fixture rate limit"})),
     ]);
     let mut client = ApiClient::new(HeaderIdentity::default(), Some(Session {
         uid:42, unid:"77".into(), token:"local-fixture-only".into(), ..Default::default()
     }));
     client.set_test_host(host);
     let anchor = crate::location::Coordinate::new(39.9,116.4,0.).unwrap();
-    let scope = model::PointsCacheScope {uid:42,unid:"77".into(),run_area_id:Some("73".into())};
+    let scope = model::PointsCacheScope {uid:42,unid:"77".into(),run_area_id:Some(73),distance_m:1000};
     model::save_points_cache(anchor, &scope, &old).unwrap();
-    assert_eq!(points::fetch_points_ext(&mut client, anchor, scope.run_area_id.clone(), &mut |_|{}).unwrap(), old);
+    assert_eq!(points::fetch_points_ext(&mut client, anchor, scope.run_area_id, 1000, &mut |_|{}).unwrap(), old);
     let mut logs = Vec::new();
-    assert_eq!(points::fetch_points_fresh_ext(&mut client, anchor, scope.run_area_id.clone(), &mut |s| logs.push(s.to_string())).unwrap(), fresh);
+    assert_eq!(points::fetch_points_fresh_ext(&mut client, anchor, scope.run_area_id, 1000, &mut |s| logs.push(s.to_string())).unwrap(), fresh);
     let cache: Value = serde_json::from_slice(&std::fs::read(root.0.join("points_cache.json")).unwrap()).unwrap();
     assert_eq!(cache["points"], json!(fresh));
     assert_eq!(cache["response_context"]["run_area_id"], 73);
     assert_eq!(cache["response_context"]["list_path"], "$.data.result.pointsModelList");
     assert!(logs.iter().any(|s| s.contains("不复用")));
-    assert!(points::fetch_points_fresh_ext(&mut client, anchor, scope.run_area_id, &mut |_|{}).unwrap_err().contains("10603"));
+    assert!(points::fetch_points_fresh_ext(&mut client, anchor, scope.run_area_id, 1000, &mut |_|{}).unwrap_err().contains("10603"));
     assert_eq!(server.join().unwrap(), 2);
+}
+
+#[test]
+fn points_request_uses_integer_area_metres_and_distance_scoped_cache() {
+    use crate::api::{client::ApiClient, model, points};
+    let _root = FixtureDir::new();
+    let old = vec![wire_point(39.9, 116.4)];
+    let changed = vec![wire_point(39.901, 116.401)];
+    let (host, server) = mock_school(vec![
+        ("/api/v560/get/1/distance/2000", json!({"error":10000,"data":{"pointsResModels":changed}})),
+        ("/api/v560/get/1/distance/1000", json!({"error":10000,"data":{"pointsResModels":old}})),
+        ("/api/v560/get/1/distance/1000", json!({"error":10000,"data":{"pointsResModels":old}})),
+    ]);
+    let mut client = ApiClient::new(HeaderIdentity::default(), Some(Session {
+        uid:42, unid:"77".into(), token:"local-fixture-only".into(), ..Default::default()
+    }));
+    client.set_test_host(host);
+    let anchor = crate::location::Coordinate::new(39.9,116.4,0.).unwrap();
+    let scope = model::PointsCacheScope {uid:42, unid:"77".into(), run_area_id:Some(73), distance_m:1000};
+    model::save_points_cache(anchor, &scope, &old).unwrap();
+    assert_eq!(points::fetch_points_ext(&mut client, anchor, Some(73), 2000, &mut |_|{}).unwrap(), changed);
+    assert_eq!(points::fetch_points_ext(&mut client, anchor, Some(73), 2000, &mut |_|{}).unwrap(), changed);
+    assert_eq!(client.test_requests.len(), 1, "same distance can reuse its preview cache");
+    let (url, body) = &client.test_requests[0];
+    assert_eq!(url, "https://run.gxapp.iydsj.com/api/v560/get/1/distance/2000");
+    let body: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(body["runAreaId"].as_i64(), Some(73));
+    assert_eq!(body["sign"], "45732c140c185c94e096316a297a6065");
+    assert_eq!(points::fetch_points_ext(&mut client, anchor, Some(73), 1000, &mut |_|{}).unwrap(), old);
+    assert_eq!(points::fetch_points_fresh_ext(&mut client, anchor, None, 1000, &mut |_|{}).unwrap(), old);
+    let body: Value = serde_json::from_str(&client.test_requests[2].1).unwrap();
+    assert!(body.get("runAreaId").is_none(), "legacy requests omit an unknown area");
+    for (area, distance) in [(Some(-1),1000), (Some(2147483648),1000), (Some(73),0), (Some(73),-1)] {
+        assert!(points::fetch_points_ext(&mut client, anchor, area, distance, &mut |_|{}).is_err());
+    }
+    assert_eq!(client.test_requests.len(), 3, "invalid parameters never send a request");
+    assert_eq!(server.join().unwrap(), 3);
+}
+
+#[test]
+fn preview_uses_school_distance_instead_of_generated_route_distance() {
+    let root = FixtureDir::new();
+    let mut policy = area_policy(true, false);
+    policy["data"]["runRuleModel"]["minDistance"] = json!(2000);
+    let (host, server) = mock_school(vec![
+        (crate::api::fence::FENCE_PATH,json!({"error":10000,"data":{"geoFences":[]}})),
+        (crate::api::policy::POLICY_PATH,policy),
+        ("/api/v560/get/1/distance/2000",json!({"error":10000,"data":{"pointsResModels":[wire_point(39.9,116.4)]}})),
+    ]);
+    let ctx = egui::Context::default();
+    let mut app = fixture_app(&root, &ctx, host); // planned route is 2400 m
+    app.refresh_school_route(false);
+    wait_for_refresh(&mut app);
+    assert_eq!(server.join().unwrap(),3);
+    assert!(app.run_page.preview_inputs.is_some(), "{}", app.osm_page.status);
+    let cached: Value = serde_json::from_slice(&std::fs::read(root.0.join("points_cache.json")).unwrap()).unwrap();
+    assert_eq!(cached["scope"]["distance_m"],2000);
+    assert_eq!(cached["scope"]["run_area_id"],73);
 }
 
 #[test]
@@ -193,7 +342,7 @@ fn string_data_http_refresh_reaches_a_complete_campus_preview() {
             json!({"error":10000,"data":policy.to_string()}),
         ),
         (
-            crate::api::points::POINTS_PATH,
+            "/api/v560/get/1/distance/1000",
             json!({"error":10000,"data":points.to_string()}),
         ),
     ]);
@@ -212,7 +361,8 @@ fn string_data_http_refresh_reaches_a_complete_campus_preview() {
         &crate::api::model::PointsCacheScope {
             uid: 42,
             unid: "77".into(),
-            run_area_id: Some("73".into()),
+            run_area_id: Some(73),
+            distance_m: 1000,
         },
         &[json!({"lat":1.,"lon":1.})],
     )
@@ -250,7 +400,7 @@ fn string_data_http_refresh_reaches_a_complete_campus_preview() {
     let cache: Value =
         serde_json::from_slice(&std::fs::read(root.0.join("points_cache.json")).unwrap()).unwrap();
     assert_eq!(
-        cache["scope"]["run_area_id"], "73",
+        cache["scope"]["run_area_id"], 73,
         "selected campus runAreaId must reach points worker"
     );
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -359,10 +509,10 @@ fn explicit_null_boundary_refreshes_points_and_repeats_one_road_loop() {
         ),
         (
             crate::api::policy::POLICY_PATH,
-            json!({"error":10000,"data":{"timestamp":123,"policy":1,"mustPoints":[]}}),
+            json!({"error":10000,"data":{"timestamp":123,"policy":1,"runRuleModel":{"minDistance":1000},"mustPoints":[]}}),
         ),
         (
-            crate::api::points::POINTS_PATH,
+            "/api/v560/get/1/distance/1000",
             json!({"error":10000,"data":{"pointsResModels":live}}),
         ),
     ]);

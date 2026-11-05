@@ -11,17 +11,19 @@ impl App {
                 .iter()
                 .find(|c| c.key == old)
                 .map(|c| c.name.as_str())
-                .unwrap_or("选择服务端校区/围栏");
+                .unwrap_or("选择学校校区或跑区");
             egui::ComboBox::from_id_salt("campus_choice")
                 .selected_text(name)
                 .width(ui.available_width().min(300.))
                 .show_ui(ui, |ui| {
                     for c in &self.osm_page.campuses {
-                        ui.selectable_value(
+                        let valid = c.run_area.as_ref().is_none_or(|a| a.valid);
+                        let label = if valid { c.name.clone() } else { format!("{}（当前无效）", c.name) };
+                        ui.add_enabled_ui(valid, |ui| { ui.selectable_value(
                             &mut self.osm_page.selected_key,
                             c.key.clone(),
-                            &c.name,
-                        );
+                            label,
+                        ); });
                     }
                 });
             if self.osm_page.selected_key != old {
@@ -37,7 +39,7 @@ impl App {
             }
             if let Some(s) = self.config.school_campus.as_mut() {
                 if ui
-                    .checkbox(&mut s.confirmed, "已核对下方围栏属于当前校区")
+                    .checkbox(&mut s.confirmed, "已核对下方围栏属于当前校区或跑区")
                     .changed()
                 {
                     let _ = crate::api::model::save_config(&self.config);

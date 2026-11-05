@@ -1,5 +1,5 @@
 //! 跑步策略：POST /api/v70103/runModePolicy。
-//! 返回 data.runRuleModel.minDistance（提交时 selDistance 用它）与 data.policy。
+//! 返回 data.runRuleModel.minDistance（点位请求距离和提交 selDistance，单位米）与 data.policy。
 
 use super::client::{get_field, ApiClient};
 use super::fence::point_xy;
@@ -14,6 +14,8 @@ pub struct PolicyInfo {
     pub valid_time: i64,
     /// 必经点（BD 系，与打卡点同系），policy 响应里若有则返回。
     pub must_points: Vec<(f64, f64)>,
+    pub run_areas: Vec<super::campus::RunArea>,
+    pub geo_fence: Option<super::fence::GeoFenceResponse>,
 }
 
 /// 从 policy 响应 `data` 中防御式提取必经点列表（字段名不确定，逐个尝试）。
@@ -82,21 +84,47 @@ pub(crate) fn parse_response(biz: &Value) -> Result<PolicyInfo, String> {
     let rule = get_field(&biz, "runRuleModel")
         .cloned()
         .unwrap_or(Value::Null);
+    let min_distance = rule.get("minDistance").and_then(Value::as_i64)
+        .ok_or("学校策略缺少有效的 runRuleModel.minDistance，请刷新学校策略")?;
+    super::points::points_path(min_distance)?;
     Ok(PolicyInfo {
         timestamp,
         policy,
-        min_distance: rule
-            .get("minDistance")
-            .and_then(|t| t.as_i64())
-            .unwrap_or(1000),
+        min_distance,
         valid_time: rule.get("validTime").and_then(|t| t.as_i64()).unwrap_or(0),
         must_points: extract_must_points(&biz)?,
+        run_areas: super::campus::parse_run_areas(get_field(&biz, "runAreaModels"))?,
+        geo_fence: get_field(&biz, "geoFence")
+            .filter(|v| !v.is_null())
+            .map(super::fence::parse_response)
+            .transpose()?,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn checkpoint_distance_requires_explicit_positive_integer_metres() {
+        for rule in [json!(null), json!({}), json!({"minDistance":null}),
+            json!({"minDistance":0}), json!({"minDistance":-1}),
+            json!({"minDistance":2.5}), json!({"minDistance":"2000"}),
+            json!({"minDistance":2147483648_i64})] {
+            assert!(parse_response(&json!({"timestamp":1,"runRuleModel":rule})).is_err());
+        }
+        assert!(parse_response(&json!({"timestamp":1})).is_err());
+        assert_eq!(parse_response(&json!({"timestamp":1,"runRuleModel":{"minDistance":2000}})).unwrap().min_distance, 2000);
+    }
+    #[test]
+    fn policy_geo_fence_is_validated_including_json_encoded_data() {
+        let data = json!({"timestamp":1,"runRuleModel":{"minDistance":1000},"runAreaModels":[{"id":73,"name":"测试跑区","valid":true,"fenceIds":[701]}],"geoFence":{"geoFences":[]}});
+        let p = parse_response(&json!({"data":data.to_string()})).unwrap();
+        assert_eq!(p.run_areas[0].id, 73);
+        assert!(p.geo_fence.unwrap().polygons.is_empty());
+        for fence in [json!({}), json!("bad"), json!({"geoFences":[{"points":[]} ]})] {
+            assert!(parse_response(&json!({"timestamp":1,"runRuleModel":{"minDistance":1000},"geoFence":fence})).is_err());
+        }
+    }
     #[test]
     fn json_text_policy_preserves_required_points_and_rules() {
         let data = json!({"timestamp":123,"policy":4,"runRuleModel":{"minDistance":2000,"validTime":600},"mustPoints":[{"lat":"39.9","lon":"116.4"}]});

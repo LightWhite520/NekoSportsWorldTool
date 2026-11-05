@@ -1,4 +1,4 @@
-//! 校园点位：POST /api/v560/get/1/distance/1（sportType=4）。
+//! 校园点位：POST /api/v560/get/1/distance/{学校规则距离，米}（sportType=4）。
 //!
 //! runec = 信封(f"{uid}{经度6位}{纬度6位}{起始时间秒级ms整}"，insert→observed 序列化)；
 //! sign = MD5(http版URL + 盐)。带按账号、学校、区域及位置隔离的 300s 缓存。
@@ -10,7 +10,12 @@ use crate::crypto::sign::md5_url_sign;
 use crate::location::Coordinate;
 use serde_json::{json, Value};
 
-pub const POINTS_PATH: &str = "/api/v560/get/1/distance/1";
+pub fn points_path(distance_m: i64) -> Result<String, String> {
+    if !(1..=i32::MAX as i64).contains(&distance_m) {
+        return Err("学校规则 minDistance 必须是有效的正整数米数，请刷新学校策略".into());
+    }
+    Ok(format!("/api/v560/get/1/distance/{distance_m}"))
+}
 
 mod response;
 pub use response::ResponseContext;
@@ -24,44 +29,53 @@ fn six_digit(v: f64) -> String {
 pub fn fetch_points(
     client: &mut ApiClient,
     anchor: Coordinate,
+    distance_m: i64,
     log: &mut dyn FnMut(&str),
 ) -> Result<Vec<Value>, String> {
-    fetch_points_ext(client, anchor, None, log)
+    fetch_points_ext(client, anchor, None, distance_m, log)
 }
 
 /// run_area_id：学校配置了区域时 App 会附带；未配置则不传（与 App 一致）。
 pub fn fetch_points_ext(
     client: &mut ApiClient,
     anchor: Coordinate,
-    run_area_id: Option<String>,
+    run_area_id: Option<i64>,
+    distance_m: i64,
     log: &mut dyn FnMut(&str),
 ) -> Result<Vec<Value>, String> {
-    fetch_points_cached(client, anchor, run_area_id, false, log)
+    fetch_points_cached(client, anchor, run_area_id, distance_m, false, log)
 }
 
 /// A new preparation or explicit refresh must obtain a new server response.
 pub fn fetch_points_fresh_ext(
     client: &mut ApiClient,
     anchor: Coordinate,
-    run_area_id: Option<String>,
+    run_area_id: Option<i64>,
+    distance_m: i64,
     log: &mut dyn FnMut(&str),
 ) -> Result<Vec<Value>, String> {
-    fetch_points_cached(client, anchor, run_area_id, true, log)
+    fetch_points_cached(client, anchor, run_area_id, distance_m, true, log)
 }
 
 fn fetch_points_cached(
     client: &mut ApiClient,
     anchor: Coordinate,
-    run_area_id: Option<String>,
+    run_area_id: Option<i64>,
+    distance_m: i64,
     fresh: bool,
     log: &mut dyn FnMut(&str),
 ) -> Result<Vec<Value>, String> {
     anchor.validate()?;
+    let path = points_path(distance_m)?;
+    if run_area_id.is_some_and(|id| !(0..=i32::MAX as i64).contains(&id)) {
+        return Err("跑区 ID 必须是有效的非负整数".into());
+    }
     let login = client.login.as_ref().ok_or("请先登录后获取点位")?;
     let scope = model::PointsCacheScope {
         uid: login.uid,
         unid: login.unid.clone(),
-        run_area_id: run_area_id.clone(),
+        run_area_id,
+        distance_m,
     };
     // ① TTL 内命中缓存直接返回
     if let Some((ts, pts)) = (!fresh)
@@ -90,7 +104,7 @@ fn fetch_points_cached(
         .unwrap_or_else(|| "0".into());
     let lat = anchor.latitude;
     let lon = anchor.longitude;
-    let url = format!("{}{}", model::HOST, POINTS_PATH);
+    let url = format!("{}{}", model::HOST, path);
 
     let start_ms = crate::crypto::envelope::now_ms();
     let runec_input = format!(

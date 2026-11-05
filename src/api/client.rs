@@ -34,6 +34,8 @@ pub struct ApiClient {
     auth_rejected: bool,
     #[cfg(test)]
     test_host: Option<String>,
+    #[cfg(test)]
+    pub(crate) test_requests: Vec<(String, String)>,
     pub agent: ureq::Agent,
     pub session: EnvelopeSession,
     pub identity: HeaderIdentity,
@@ -55,6 +57,8 @@ impl ApiClient {
             auth_rejected: false,
             #[cfg(test)]
             test_host: None,
+            #[cfg(test)]
+            test_requests: Vec::new(),
             agent: make_agent(),
             session: EnvelopeSession::new(),
             identity,
@@ -124,6 +128,8 @@ impl ApiClient {
         extra_headers: &[(String, String)],
     ) -> Result<RequestOutcome, String> {
         self.ensure_session_valid()?;
+        #[cfg(test)]
+        self.test_requests.push((url.to_owned(), body_plain.to_owned()));
         let uid = self.uid();
         let token = self.token();
         let (header_plain, _) = build_header_for(&self.identity, uid, &token, None);

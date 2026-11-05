@@ -125,9 +125,11 @@ pub fn run_reviewed_flow_cancellable(
     log("[road] 获取并核对当前校区围栏…");
     let fences = super::fence::fetch_geo_fence_response(client)
         .map_err(|e| format!("无法确认本次围栏：{e}"))?;
-    let fences = if params.route_mode.uses_network() && !fences.polygons.is_empty() {
+    let fences = pol.geo_fence.clone().unwrap_or(fences);
+    let fences = if !pol.run_areas.is_empty() || (params.route_mode.uses_network() && !fences.polygons.is_empty()) {
         super::campus::selected_response(
             fences,
+            &pol.run_areas,
             super::model::load_config().school_campus.as_ref(),
             &sess.unid,
         )?
@@ -141,15 +143,15 @@ pub fn run_reviewed_flow_cancellable(
         return Err("请先在设备信息页填写本次跑步所在城市和定位锚点，不能使用大连默认配置".into());
     }
     let anchor: Coordinate = client.identity.anchor_coordinate()?;
-    let area_id = (fences.area.run_area_id >= 0).then(|| fences.area.run_area_id.to_string());
+    let area_id = (fences.area.run_area_id >= 0).then_some(fences.area.run_area_id);
     // Track confirmation is bound to the preview's checkpoint snapshot. Reuse
     // only its valid scoped cache; if it expired, resolve() below rejects changes.
     // Otherwise a random assignment on every fetch would make confirmation unusable.
     let pts = if params.track_selection.is_some() {
         log("[points] 已确认跑道：沿用有效预览点位；点位变化后须重新确认跑道");
-        points::fetch_points_ext(client, anchor, area_id, log)?
+        points::fetch_points_ext(client, anchor, area_id, pol.min_distance, log)?
     } else {
-        points::fetch_points_fresh_ext(client, anchor, area_id, log)?
+        points::fetch_points_fresh_ext(client, anchor, area_id, pol.min_distance, log)?
     };
     if pts.is_empty() {
         return Err("实时点位为空 —— 拒绝本地样本兜底".into());

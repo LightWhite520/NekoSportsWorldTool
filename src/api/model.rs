@@ -423,7 +423,9 @@ pub const POINTS_TTL_MS: i64 = 300_000;
 pub struct PointsCacheScope {
     pub uid: i64,
     pub unid: String,
-    pub run_area_id: Option<String>,
+    pub run_area_id: Option<i64>,
+    /// Required so caches from the old fixed-distance request are invalidated.
+    pub distance_m: i64,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -452,7 +454,7 @@ impl PointsCache {
     }
 }
 
-/// 旧版未记录账号、学校、区域的缓存自然失效；拒绝过期或来自未来的缓存。
+/// 缺少账号、学校、区域或请求距离的旧缓存自然失效；拒绝过期或来自未来的缓存。
 pub fn load_points_cache_for(
     anchor: crate::location::Coordinate,
     scope: &PointsCacheScope,
@@ -504,6 +506,7 @@ mod points_cache_tests {
                 uid: 1,
                 unid: "school".into(),
                 run_area_id: None,
+                distance_m: 1000,
             },
             points: vec![serde_json::json!({"lat":39.9,"lon":116.4})],
         };
@@ -521,7 +524,11 @@ mod points_cache_tests {
                 ..cache.scope.clone()
             },
             PointsCacheScope {
-                run_area_id: Some("42".into()),
+                run_area_id: Some(42),
+                ..cache.scope.clone()
+            },
+            PointsCacheScope {
+                distance_m: 2000,
                 ..cache.scope.clone()
             },
         ] {
@@ -534,6 +541,9 @@ mod points_cache_tests {
         ));
         let mut old = serde_json::to_value(&cache).unwrap();
         old.as_object_mut().unwrap().remove("scope");
+        assert!(serde_json::from_value::<PointsCache>(old).is_err());
+        let mut old = serde_json::to_value(&cache).unwrap();
+        old["scope"].as_object_mut().unwrap().remove("distance_m");
         assert!(serde_json::from_value::<PointsCache>(old).is_err());
         let decoded: PointsCache =
             serde_json::from_value(serde_json::to_value(cache).unwrap()).unwrap();

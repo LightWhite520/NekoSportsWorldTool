@@ -161,12 +161,21 @@ impl App {
                 }
                 stage("获取当前学校围栏…");
                 let response = crate::api::fence::fetch_geo_fence_response(&mut client)?;
-                campuses = crate::api::campus::catalog(&response);
+                control.check()?;
+                stage("获取学校策略与跑区…");
+                let policy = crate::api::policy::fetch_policy(&mut client)?;
+                let response = policy.geo_fence.clone().unwrap_or(response);
+                campuses = crate::api::campus::catalog_with_areas(&response, &policy.run_areas)?;
                 let school = client.login.as_ref().ok_or("未登录")?.unid.clone();
+                let has_run_areas = !policy.run_areas.is_empty();
+                if has_run_areas && selection.as_ref().is_some_and(|s| s.school == school)
+                    && crate::api::campus::chosen(&campuses, selection.as_ref(), &school).is_none() {
+                    return Err("跑区配置已变化，请重新选择跑区并核对围栏".into());
+                }
                 let campus = crate::api::campus::chosen(&campuses, selection.as_ref(), &school)
                     .or_else(|| {
-                        campuses.iter().find(|c| {
-                            preview_anchor.is_some_and(|anchor| {
+                        let mut candidates = campuses.iter().filter(|c| {
+                            c.run_area.as_ref().is_none_or(|a| a.valid) && preview_anchor.is_some_and(|anchor| {
                                 c.polygons.iter().any(|p| {
                                     route_planner::point_in_polygon(
                                         &p.iter()
@@ -179,10 +188,15 @@ impl App {
                                     )
                                 })
                             })
-                        })
+                        });
+                        let first = candidates.next();
+                        if has_run_areas && candidates.next().is_some() { None } else { first }
                     })
-                    .or_else(|| campuses.first())
+                    .or_else(|| if has_run_areas { None } else { campuses.first() })
                     .cloned();
+                if has_run_areas && campus.is_none() {
+                    return Err("不能唯一确定当前跑区，请在列表中选择学校提供的有效跑区".into());
+                }
                 let fences = campus
                     .as_ref()
                     .map(|c| c.polygons.clone())
@@ -191,7 +205,7 @@ impl App {
                     selected_key = campus.key.clone();
                     campus.run_area_id(response.area.run_area_id)?
                 } else {
-                    (response.area.run_area_id >= 0).then(|| response.area.run_area_id.to_string())
+                    (response.area.run_area_id >= 0).then_some(response.area.run_area_id)
                 };
                 control.check()?;
                 stage("下载或读取学校路网…");
@@ -220,8 +234,7 @@ impl App {
                 // Preview metadata is optional for displaying the road graph.
                 let anchor =
                     preview_anchor.ok_or("请在设备信息页配置当前城市和定位锚点，再刷新路线点位")?;
-                stage("获取当前学校策略与路线点位…");
-                let policy = crate::api::policy::fetch_policy(&mut client)?;
+                stage("获取所选区域的路线点位…");
                 control.check()?;
                 let fetch_points = if force {
                     crate::api::points::fetch_points_fresh_ext
@@ -232,6 +245,7 @@ impl App {
                     &mut client,
                     anchor,
                     run_area_id,
+                    policy.min_distance,
                     &mut log,
                 )?;
                 if pts.is_empty() || crate::api::points::points_bd(&pts).len() != pts.len() {

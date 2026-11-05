@@ -553,7 +553,14 @@ fn cmd_obs_sample(rest: &[&str]) -> i32 {
             return 1;
         }
     };
-    let pts = match crate::api::points::fetch_points(&mut client, anchor, &mut log) {
+    let policy = match crate::api::policy::fetch_policy(&mut client) {
+        Ok(policy) => policy,
+        Err(e) => {
+            eprintln!("学校策略获取失败: {e}");
+            return 1;
+        }
+    };
+    let pts = match crate::api::points::fetch_points(&mut client, anchor, policy.min_distance, &mut log) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("点位拉取失败: {e}");

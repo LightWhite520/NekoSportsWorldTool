@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 pub const FENCE_PATH: &str = "/api/v1/getGeoFenceForRun";
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct GeoFenceResponse {
     pub polygons: Vec<Vec<(f64, f64)>>,
     pub area: crate::track::wire::RunAreaMeta,
